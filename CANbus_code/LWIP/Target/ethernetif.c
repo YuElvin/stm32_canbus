@@ -433,14 +433,10 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
     Txbuffer[i].buffer = q->payload;
     Txbuffer[i].len = q->len;
 
-    /* Clean D-Cache: align address down to 32-byte cache line boundary,
-       extend size to cover the full cache lines touched by this payload. */
-    {
-      uint32_t addr = (uint32_t)q->payload;
-      uint32_t aligned = addr & ~31U;
-      uint32_t size = (uint32_t)q->len + (addr - aligned);
-      SCB_CleanDCache_by_Addr((uint32_t *)aligned, (int32_t)((size + 31U) & ~31U));
-    }
+    /* No D-Cache maintenance needed: LwIP heap is in D2 SRAM (0x30005000+),
+       which is configured as Non-Cacheable by MPU Region 0. Calling
+       SCB_CleanDCache_by_Addr on non-cacheable memory triggered imprecise
+       BusFault on STM32H7 (write to DCCMVAC + DSB). */
 
     if(i>0)
     {
@@ -964,8 +960,9 @@ void HAL_ETH_RxLinkCallback(void **pStart, void **pEnd, uint8_t *buff, uint16_t 
     p->tot_len += Length;
   }
 
-  /* Invalidate data cache because Rx DMA's writing to physical memory makes it stale. */
-  SCB_InvalidateDCache_by_Addr((uint32_t *)buff, Length);
+  /* No Invalidate D-Cache needed: Rx pool is in D2 SRAM (0x30000100+),
+     which is Non-Cacheable per MPU Region 0. Calling cache maintenance on
+     non-cacheable memory triggers imprecise BusFault on STM32H7. */
 
 /* USER CODE END HAL ETH RxLinkCallback */
 }
