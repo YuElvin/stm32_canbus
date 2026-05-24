@@ -36,6 +36,11 @@
 #include <stdio.h>
 #include <string.h>
 extern UART_HandleTypeDef huart2;
+
+/* ETH packet counters for debug */
+volatile uint32_t eth_rx_count = 0;
+volatile uint32_t eth_tx_count = 0;
+volatile uint32_t eth_rx_err_count = 0;
 /* USER CODE END 0 */
 
 /* Private define ------------------------------------------------------------*/
@@ -461,6 +466,7 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   {
     if(HAL_ETH_Transmit_IT(&heth, &tx_config) == HAL_OK)
     {
+      eth_tx_count++;
       errval = ERR_OK;
     }
     else
@@ -500,6 +506,7 @@ static struct pbuf * low_level_input(struct netif *netif)
   if(RxAllocStatus == RX_ALLOC_OK)
   {
     HAL_ETH_ReadData(&heth, (void **)&p);
+    if (p != NULL) eth_rx_count++;
   }
 
   return p;
@@ -839,6 +846,8 @@ void ethernet_link_thread(void* argument)
   ETH_MACConfigTypeDef MACConf = {0};
   int32_t PHYLinkState = 0;
   uint32_t linkchanged = 0U, speed = 0U, duplex = 0U;
+  int32_t prev_link = -99;
+  uint32_t print_tick = 0;
 
   struct netif *netif = (struct netif *) argument;
 /* USER CODE BEGIN ETH link init */
@@ -848,6 +857,23 @@ void ethernet_link_thread(void* argument)
   for(;;)
   {
   PHYLinkState = LAN8742_GetLinkState(&LAN8742);
+
+  /* Print link state changes and periodic stats */
+  {
+    char dbg[96];
+    if (PHYLinkState != prev_link) {
+      sprintf(dbg, "[ETH] link change: %ld -> %ld, netif_up=%d\r\n",
+              prev_link, PHYLinkState, netif_is_link_up(netif));
+      HAL_UART_Transmit(&huart2, (uint8_t*)dbg, strlen(dbg), 100);
+      prev_link = PHYLinkState;
+    }
+    if (HAL_GetTick() - print_tick >= 2000) {
+      print_tick = HAL_GetTick();
+      sprintf(dbg, "[ETH] stat rx=%lu tx=%lu link=%ld up=%d\r\n",
+              eth_rx_count, eth_tx_count, PHYLinkState, netif_is_link_up(netif));
+      HAL_UART_Transmit(&huart2, (uint8_t*)dbg, strlen(dbg), 100);
+    }
+  }
 
   if(netif_is_link_up(netif) && (PHYLinkState <= LAN8742_STATUS_LINK_DOWN))
   {
