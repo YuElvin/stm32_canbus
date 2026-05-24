@@ -56,12 +56,21 @@ const osThreadAttr_t defaultTask_attributes = {
   .priority = (osPriority_t) osPriorityNormal,
 };
 
+/* Definitions for heartbeatTask */
+osThreadId_t heartbeatTaskHandle;
+const osThreadAttr_t heartbeatTask_attributes = {
+  .name = "heartbeat",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
+
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
+void StartHeartbeatTask(void *argument);
 
 extern void MX_LWIP_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
@@ -97,7 +106,7 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  heartbeatTaskHandle = osThreadNew(StartHeartbeatTask, NULL, &heartbeatTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -118,13 +127,22 @@ void StartDefaultTask(void *argument)
   /* init code for LWIP */
   MX_LWIP_Init();
   /* USER CODE BEGIN StartDefaultTask */
-  /* Infinite loop */
+  /* LwIP init done, this task can terminate */
+  osThreadExit();
+  /* USER CODE END StartDefaultTask */
+}
+
+/* USER CODE BEGIN Header_StartHeartbeatTask */
+/* USER CODE END Header_StartHeartbeatTask */
+void StartHeartbeatTask(void *argument)
+{
+  /* USER CODE BEGIN StartHeartbeatTask */
   for(;;)
   {
-    HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_7);  /* PE7 heartbeat: 500ms toggle */
+    HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_7);  /* 1Hz blink = system alive */
     osDelay(500);
   }
-  /* USER CODE END StartDefaultTask */
+  /* USER CODE END StartHeartbeatTask */
 }
 
 /* Private application code --------------------------------------------------*/
