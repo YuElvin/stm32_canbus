@@ -283,7 +283,29 @@ static void low_level_init(struct netif *netif)
 /* USER CODE END OS_THREAD_NEW_CMSIS_RTOS_V2 */
 
 /* USER CODE BEGIN PHY_PRE_CONFIG */
-
+  /* LAN8720 does not have LAN8742's SMR register, so auto-scan fails.
+     Probe address 0 and 1 by reading BSR (reg 1) — a valid PHY returns 0x7809 or similar (not 0x0000/0xFFFF). */
+  {
+    uint32_t bsr = 0;
+    uint32_t lan8720_addr = 0xFFFFFFFF;
+    uint32_t probe;
+    for (probe = 0; probe <= 1; probe++)
+    {
+      if (ETH_PHY_IO_ReadReg(probe, 0x01 /* BSR */, &bsr) == 0)
+      {
+        if (bsr != 0x0000 && bsr != 0xFFFF)
+        {
+          lan8720_addr = probe;
+          break;
+        }
+      }
+    }
+    if (lan8720_addr != 0xFFFFFFFF)
+    {
+      LAN8742.DevAddr = lan8720_addr;
+      LAN8742.Is_Initialized = 1;  /* skip SMR scan in LAN8742_Init */
+    }
+  }
 /* USER CODE END PHY_PRE_CONFIG */
   /* Set PHY IO functions */
   LAN8742_RegisterBusIO(&LAN8742, &LAN8742_IOCtx);
@@ -297,9 +319,10 @@ static void low_level_init(struct netif *netif)
   }
 
   /* USER CODE BEGIN PHY_POST_INIT */
-  /* Print detected PHY address to USART2 */
-  char msg[64];
-  sprintf(msg, "[ETH] PHY detected at address: %lu\r\n", LAN8742.DevAddr);
+  char msg[80];
+  sprintf(msg, "[ETH] LAN8720 addr=%lu, link=%s\r\n",
+          LAN8742.DevAddr,
+          (LAN8742.DevAddr <= 1) ? "probed-OK" : "scan-fallback");
   HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
   /* USER CODE END PHY_POST_INIT */
 
