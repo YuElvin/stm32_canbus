@@ -206,6 +206,8 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 
 ## 五、各问题与修复汇总
 
+> 本表按发现顺序排列。**带 ⚠️ 的修复后被推翻或修正**，请阅读到表末才能看到最终结论。
+
 | # | 问题 | 现象 | 根本原因 | 修复方法 | 修复文件 |
 |---|---|---|---|---|---|
 | 0 | 链接脚本缺 ETH DMA 段 | ETH DMA 描述符未落在 D2 SRAM | CubeMX 未生成 `.RxDescripSection` 等段定义 | 手动在 ld 脚本加 `.lwip_sec` 段，强制映射到 0x30000000 | `STM32H750XX_FLASH.ld` |
@@ -213,58 +215,81 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 | 2 | PHY 地址识别错误（31） | 串口输出 `addr=31` | LAN8720 无 SMR 寄存器，LAN8742 驱动的 SMR 扫描失效 | 改用 BSR 寄存器探测地址 0 和 1 | `LWIP/Target/ethernetif.c` |
 | 3 | 冷启动 PHY 探测失败 | 上电时 addr=31，Reset 后 addr=1 | LAN8720 无复位引脚，上电后 MDIO 未稳定，读到无效值 | `ETH_PHY_IO_Init()` 加 `HAL_Delay(1000)` | `LWIP/Target/ethernetif.c` |
 | 4 | 多网卡路由走错 | ping 回复来自 10.0.40.9 | Windows 默认路由走 WiFi | ping 加 `-S 192.168.1.100` 指定源地址 | — （电脑配置） |
-| 5 | Ping 无回复 | 全部超时或"无法访问目标主机" | 发送路径缺 `SCB_CleanDCache_by_Addr`，DMA 读到脏 Cache 数据 | `low_level_output()` 每个 pbuf 发送前 Clean D-Cache（地址向下对齐到 32 字节） | `LWIP/Target/ethernetif.c` |
+| 5 ⚠️ | Ping 无回复（曾以为是 D-Cache 问题） | 全部超时或"无法访问目标主机" | ⚠️ 后来证明 D-Cache 维护**根本不该做**（D2 SRAM 是 non-cacheable），真正原因是 MPU 编码错误（见 #18） | 先加 `SCB_CleanDCache_by_Addr`，**最终全部移除** | `LWIP/Target/ethernetif.c` |
 | 6 | 接收任务栈太小 | 可能引发栈溢出 | `INTERFACE_THREAD_STACK_SIZE = 350`（1400B）太小 | 增大到 512 words（2048B） | `LWIP/Target/ethernetif.c` |
-| 7 | LWIP_RAM_HEAP_POINTER 与 Rx 缓冲池冲突 | ping 无回复，ARP 数据被覆盖 | Rx_PoolSection 结束于 0x30004A83，堆起点 0x30004000 落在 pool 内部，LwIP 堆分配覆盖 Rx 缓冲池 | `LWIP_RAM_HEAP_POINTER` 从 0x30004000 改为 0x30005000 | `LWIP/Target/lwipopts.h` |
-| 8 | FreeRTOS 堆不足，程序卡死 | PE7 常亮或不亮，MX_LWIP_Init 卡死 | `configTOTAL_HEAP_SIZE=15360`（15KB）不够，4 个任务+队列+信号量超出上限，tcpip_init 内部任务创建失败 | 15360 → 32768（32KB） | `Core/Inc/FreeRTOSConfig.h` |
-| 9 | 心跳灯与 LwIP 耦合，无法区分崩溃类型 | PE7 常亮/不亮/闪几下熄灭，无法判断是 LwIP 卡死还是系统崩溃 | 心跳和 LwIP 初始化在同一任务，LwIP 任何阻塞都影响心跳 | 新增独立 heartbeatTask（osPriorityLow），defaultTask 只做 LwIP 初始化后退出 | `Core/Src/freertos.c` |
-| 10 | LwIP 堆未定义 MEM_SIZE，默认 1600B 不够 | PE7 闪几下后熄灭，configASSERT 触发 | `lwipopts.h` 未定义 `MEM_SIZE`，LwIP 使用默认 1600 字节，pbuf/TCP 缓冲区分配失败触发 LWIP_ASSERT | `MEM_SIZE = 16 * 1024` | `LWIP/Target/lwipopts.h` |
-| 11 | configASSERT 和 fault handler 静默死循环 | 崩溃后无任何输出，无法定位 | 原 `configASSERT` 直接 `taskDISABLE_INTERRUPTS+for(;;)`，fault handler 也是 `while(1)` | configASSERT 改为打印文件名行号；HardFault/MemManage/BusFault/UsageFault 改为从栈帧读 PC/LR/CFSR 打印 | `FreeRTOSConfig.h`、`stm32h7xx_it.c`、`main.c` |
-| 12 | LwIP ARP 非对齐访问 HardFault（根本原因） | 每次上电必崩，`[HARDFAULT] PC=0x0800DAA2 CFSR=0x01000000` | 以太网帧头 14 字节，ARP 头内部字段偏移 18 字节，不是 4 字节对齐；LwIP SMEMCPY 展开为 `str.w`，Cortex-M7 UNALIGN_TRP 触发 UsageFault→HardFault | `ETH_PAD_SIZE=2`，在 pbuf 前插入 2 字节填充，使所有字段 4 字节对齐 | `LWIP/Target/lwipopts.h` |
+| 7 | LWIP_RAM_HEAP_POINTER 与 Rx 缓冲池冲突 | ping 无回复，ARP 数据被覆盖 | Rx_PoolSection 结束于 0x30004A83，堆起点 0x30004000 落在 pool 内部 | 0x30004000 → 0x30005000 | `LWIP/Target/lwipopts.h` |
+| 8 | FreeRTOS 堆不足，程序卡死 | PE7 常亮或不亮，MX_LWIP_Init 卡死 | `configTOTAL_HEAP_SIZE=15360`（15KB）不够，4 个任务+队列+信号量超出上限 | 15360 → 32768（32KB） | `Core/Inc/FreeRTOSConfig.h` |
+| 9 | 心跳灯与 LwIP 耦合，无法区分崩溃类型 | PE7 常亮/不亮/闪几下熄灭 | 心跳和 LwIP 初始化在同一任务 | 新增独立 heartbeatTask（osPriorityLow） | `Core/Src/freertos.c` |
+| 10 | LwIP 堆未定义 MEM_SIZE | PE7 闪几下后熄灭，configASSERT 触发 | LwIP 默认 1600 字节，pbuf 分配失败 | `MEM_SIZE = 16 * 1024` | `LWIP/Target/lwipopts.h` |
+| 11 | configASSERT 和 fault handler 静默死循环 | 崩溃后无任何输出，无法定位 | 默认实现是 `while(1)` | configASSERT 打印文件名行号；Fault Handler 从异常栈帧读 PC/LR/CFSR | `FreeRTOSConfig.h`、`stm32h7xx_it.c`、`main.c` |
+| 12 ⚠️ | LwIP ARP 非对齐 HardFault（PC=0x0800DAA2） | `[HARDFAULT] CFSR=0x01000000` UNALIGNED | ⚠️ 当时以为是 ARP 头偏移问题，加 `ETH_PAD_SIZE=2` 让 IP 头 4 字节对齐 | 加 `ETH_PAD_SIZE=2`（**后来证明这只是缓解，真正原因见 #15、#18**） | `LWIP/Target/lwipopts.h` |
+| 13 | LwIP ARP 非对齐 HardFault（PC=0x0800DAA6，**ETH_PAD_SIZE 没解决**） | 崩溃位置未变，PC 偏移几字节 | LwIP 的 `SMEMCPY` 是 `memcpy`，GCC 14 把它内联成 `str.w`（32-bit store），访问 packed struct 字段（如 ARP `dhwaddr` offset 18）非对齐地址 | 在 `lwipopts.h` 覆盖 `SMEMCPY` 为强制按字节拷贝（`volatile uint8_t *` 防优化） | `LWIP/Target/lwipopts.h` |
+| 14 | imprecise BusFault（PC=0x08000AF4） | `[HARDFAULT] CFSR=0x00000400` BFSR.IMPRECISERR，崩溃在 `low_level_output` 内 cache clean 循环 | 对 D2 SRAM（应是 non-cacheable）调 `SCB_CleanDCache_by_Addr` 触发 BusFault。结合 #18 看，本质是 MPU 编码错误把 D2 SRAM 配成了 device-like | 先把 cache 维护操作改为只对 AXI SRAM 调用，**最终在 #18 修复后整段删除** | `LWIP/Target/ethernetif.c` |
+| 15 ⚠️ | ETH_PAD_SIZE=2 导致 ARP 静默丢弃 | ping 不通，`rx=29 tx=2`（收到但不回应） | LwIP 的 `ethernet_input` 在 `pbuf_remove_header(ETH_PAD_SIZE)` 跳过 2 字节，但 STM32H7 ETH RX DMA 没有产生这 2 字节填充，跳过后 hdr 错位 → 帧解析失败 → 静默丢弃 | 移除 `ETH_PAD_SIZE`（**但移除后 #12 的非对齐又复发，最终在 #18 修复**） | `LWIP/Target/lwipopts.h` |
+| 16 | PHY 链路状态在 100M FD 和 10M HD 之间疯狂抖动 | log 中 `link change: 2->5` 每 100ms 一次，DMA 反复 Stop/Start，rx 计数几乎不增长 | MDIO 读 PHYSCSR 寄存器值不稳定（PHY 内部协商时寄存器抖动）；原 `ethernet_link_thread` 每次状态变化都 `HAL_ETH_Stop_IT+Start_IT`，破坏 RX DMA 描述符 | ① 链路状态去抖动：必须连续 5 次（500ms）相同才采纳 ② ETH 只 `Start_IT` 一次，永不 `Stop_IT` | `LWIP/Target/ethernetif.c` |
+| 17 | ip4_input 非对齐 HardFault（PC=0x0800E514） | `[HARDFAULT] CFSR=0x01000000` UNALIGNED，`ip4.c:549` 读 IP dst 地址 | IP header 在 ETH 帧偏移 14 处，`iphdr->dest`（offset 16）= pbuf+30，非 4 字节对齐；`ldr.w` 32-bit 加载触发 fault | 见 #18（最终修复） | — |
+| 18 ⭐ | **MPU 编码错误（所有非对齐/Cache fault 的根本原因）** | 之前所有看似独立的问题，实际是同一个根本原因 | CubeMX 默认 MPU 配置 `TEX=001, C=0, B=1, S=0` 在 ARMv7-M 规范中是 "Implementation-defined"，STM32H7 上行为接近 Device memory：禁止非对齐访问，cache 维护可能触发 fault。**正确的 Normal Non-Cacheable 编码必须 B=0** | `IsBufferable: BUFFERABLE → NOT_BUFFERABLE`（B=1→0），并显式 `SCB->CCR &= ~UNALIGN_TRP_Msk` 双重保护 | `Core/Src/main.c` |
+| 19 | 移除 D-Cache 维护操作 | #14 已临时绕过 cache fault，#18 修复后 D2 SRAM 真的是 Normal NC，cache 维护本就是 no-op | 既然内存非 cacheable，CPU 访问直接到内存，DMA 看到的就是最新数据 | 删除 `low_level_output` 中所有 cache clean，删除 `HAL_ETH_RxLinkCallback` 中的 cache invalidate | `LWIP/Target/ethernetif.c` |
 
 ---
 
 ## 六、关键经验总结
 
-### STM32H7 以太网调试坑（按踩坑顺序）
+### STM32H7 + LwIP 必须知道的"坑王"：MPU 编码错误
 
-1. **链接脚本必须手动加 ETH DMA 段**：CubeMX 不会自动生成 `.RxDescripSection` 等段，必须手动在 ld 脚本里强制映射到 D2 SRAM（0x30000000）。
+**最重要的经验**：CubeMX 默认生成的 MPU 配置 `TEX=001, C=0, B=1, S=0` 是 ARMv7-M 规范中的 **Implementation-defined** 编码，在 STM32H7 上行为接近 Device memory：
+- **禁止非对齐 word 访问**（即使 `SCB->CCR.UNALIGN_TRP=0`）
+- **cache 维护操作可能触发 imprecise BusFault**
 
-2. **D-Cache Clean（发送）**：pbuf payload 在 Cacheable 的 AXI SRAM，发送前必须 `SCB_CleanDCache_by_Addr`，地址要向下对齐到 32 字节 cache line 边界，否则 DMA 读到旧数据，发出去的包内容错误。
+**正确的 Normal Outer/Inner Non-Cacheable 编码必须是 `TEX=001, C=0, B=0`**（`IsBufferable = NOT_BUFFERABLE`）。
 
-3. **D-Cache Invalidate（接收）**：DMA 写完 Rx Buffer 后，CPU 读之前必须 `SCB_InvalidateDCache_by_Addr`。`HAL_ETH_RxLinkCallback` 里已有，不要删。
+这一个错误衍生出了好几种崩溃现象（看似毫无关联）：
+- LwIP ARP 处理时 packed struct 字段访问 HardFault
+- LwIP IP header 字段（offset 16）访问 HardFault
+- D-Cache 维护操作触发 imprecise BusFault
+- pbuf payload 任何非对齐 32-bit 访问 HardFault
 
-4. **LWIP_RAM_HEAP_POINTER 必须在 Rx 缓冲池之后**：CubeMX 默认值 0x30004000 会与 Rx_PoolSection 重叠（pool 约 18.3KB，结束于 0x30004A83）。必须通过 `.map` 文件确认 pool 实际结束地址，再设置堆起点。
+**调试要点**：如果 STM32H7 上以太网出现"看似随机但 PC 都在 LwIP 内部 ldr/str 指令"的崩溃，**第一个怀疑就是 MPU 的 B 位**。
 
-5. **必须显式定义 MEM_SIZE**：LwIP 默认 MEM_SIZE 只有 1600 字节，远不够用，必须在 `lwipopts.h` 里显式设置（本项目用 16KB）。
+### STM32H7 + LwIP 其他必须配置
 
-6. **ETH_PAD_SIZE=2 是必须的**：以太网帧头 14 字节，不加 padding 时 ARP/IP 结构体字段会落在非 4 字节对齐地址，Cortex-M7 的 UNALIGN_TRP 触发 UsageFault→HardFault。这是 LwIP 在 STM32H7 上的已知问题。
-
-7. **FreeRTOS 堆要足够大**：LwIP + ETH 需要同时运行 4 个任务（defaultTask/tcpip_thread/EthIf/EthLink），加上队列、信号量、TCB 开销，15KB 不够，至少需要 32KB。
+1. **链接脚本**：手动加 `.lwip_sec` 段，强制 ETH DMA 描述符落在 D2 SRAM (0x30000000)
+2. **`LWIP_RAM_HEAP_POINTER`**：必须在 Rx 缓冲池之后（通过 `.map` 文件确认 pool 实际结束地址）
+3. **`MEM_SIZE`**：显式定义至少 16KB（默认 1600B 不够）
+4. **`configTOTAL_HEAP_SIZE`**：≥ 32KB（4 个任务 + 队列 + 信号量）
+5. **不需要** `ETH_PAD_SIZE` —— 加了反而破坏接收链路（H7 RX DMA 不产生填充）
+6. **不需要** D-Cache 维护 —— D2 SRAM 配为 Normal Non-Cacheable 后，CPU 直写直读
+7. **PHY 链路状态必须去抖动** —— MDIO 抖动会导致频繁 Stop_IT/Start_IT 破坏 DMA
+8. **`HAL_ETH_Stop_IT` 慎用** —— 任何状态下都不应该停止 ETH DMA，让外设保持运行
 
 ### LAN8720 使用注意
 
-1. **没有 SMR 寄存器**：不能用 LAN8742 驱动的 SMR 自动扫描 PHY 地址，要改用 BSR（标准寄存器，所有 PHY 都有）探测地址 0 和 1。
+1. **没有 SMR 寄存器**：用 BSR（reg 0x01）探测地址 0 和 1，不能用 LAN8742 驱动的 SMR 扫描
+2. **没有 RESET 引脚**：上电后等 ≥1000ms 再访问 MDIO
+3. **PHY 地址固定为 1**（由 PHYAD[2:0] 引脚电平决定）
 
-2. **没有 RESET 引脚**（模块未引出）：上电后必须等待 ≥1000ms 再初始化 MDIO，否则读不到有效值。如果后续自己画板，强烈建议把 LAN8720 的 NRST 引脚接到 STM32 的一个 GPIO。
+### GCC 14 + LwIP 的隐患
 
-3. **PHY 地址由硬件引脚决定**：该模块地址为 1（由 PHYAD[2:0] 引脚决定，模块内部已固定）。
+- `SMEMCPY` 默认是 `memcpy()`，GCC 内联成 `str.w`/`ldr.w`
+- packed struct 的字节对齐字段被当成 word 访问
+- **修复**：在 `lwipopts.h` 覆盖 `SMEMCPY` 为 `volatile uint8_t *` 字节循环
+- 注：MPU 编码修复（#18）后这个问题"自然消失"，但保留 SMEMCPY override 作为安全网
 
 ### 调试方法经验
 
-1. **心跳灯要独立任务**：不要把心跳和业务逻辑放在同一个任务，否则业务卡死时无法区分是"业务卡死"还是"系统崩溃"。
-
-2. **configASSERT 必须打印**：默认的 `taskDISABLE_INTERRUPTS+for(;;)` 完全静默，改为打印文件名和行号后立即能定位问题。
-
-3. **Fault Handler 必须打印 PC/LR/CFSR**：HardFault 等异常的默认 `while(1)` 无法定位，从异常栈帧读出 PC 后用 `arm-none-eabi-addr2line` 可以精确到源码行。
-
-4. **用 .map 文件验证内存布局**：每次修改内存相关配置后，检查 `build/CANbus_code.map` 确认各段实际地址，避免地址冲突。
+1. **心跳灯独立任务**（`heartbeatTask`，`osPriorityLow`）：业务卡死时心跳还在，能区分"业务卡死"和"系统崩溃"
+2. **`configASSERT` 必须打印文件名行号**：默认静默死循环，改为打印能立刻定位 LwIP/RTOS 内部断言
+3. **Fault Handler 必须打印 PC/LR/CFSR**：从异常栈帧（MSP/PSP）读出，用 `arm-none-eabi-addr2line` 定位源码行
+4. **`.map` 文件验证内存布局**：每次改内存配置都要看 map，避免堆/缓冲池/段重叠
+5. **CFSR 解码必须仔细**：`UFSR` 在 `CFSR[31:16]`、`BFSR` 在 `CFSR[15:8]`、`MMFSR` 在 `CFSR[7:0]`，bit 位置容易看错
+6. **运行时统计计数器**：rx/tx 包计数 + 链路状态打印是定位"收得到不回应"vs"根本收不到"的关键
+7. **诊断代码不要急着删**：调试代码静默运行不影响功能，等所有问题都修完再清理
 
 ### Windows 多网卡 Ping 问题
 
-- 电脑同时连 WiFi 和有线时，ping 走的是默认路由（通常是 WiFi）
-- 指定源地址：`ping 目标IP -S 直连网卡IP`
-- 或者临时关闭 WiFi 再测试
+- 电脑同时连 WiFi 和有线时，ping 走默认路由（通常 WiFi）
+- 用 `ping 目标IP -S 直连网卡IP` 强制源地址
+- 或临时关闭 WiFi
 
 ---
 
@@ -273,31 +298,45 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 | commit | 说明 |
 |---|---|
 | `7e8ebc3` | 项目初始化，CubeMX 工程骨架入库 |
-| `a838c9d` | LAN8720 ping-only 固件适配：链接脚本修复、main.c 剥离、ethernetif.c 打印 PHY 信息、PE7 心跳灯 |
-| `3495682` | 修复 FatFs/syscall.c 编译错误，完成首次成功构建（75KB，零错误） |
-| `421bcd0` | LAN8720 PHY 地址探测改用 BSR，绕过 LAN8742 的 SMR 扫描 |
-| `0225cfe` | LAN8720 上电延时 300ms，解决冷启动 PHY 探测失败 |
-| `88bf2a0` | D-Cache Clean on Tx（地址对齐修正）+ 增大 EthIf 任务栈 |
-| `06e5c99` | 修复 LWIP_RAM_HEAP_POINTER 与 Rx 缓冲池地址冲突（通过 .map 文件确认） |
-| `0604050` | FreeRTOS 堆扩大到 32KB + 上电延时增加到 500ms |
-| `b07d2d8` | 心跳灯独立任务（heartbeatTask），defaultTask 只做 LwIP 初始化后退出 |
-| `6cf010b` | 显式定义 MEM_SIZE=16KB，解决 LwIP 堆耗尽导致 assert 崩溃 |
-| `a390aa8` | configASSERT 改为串口打印文件名行号；Error_Handler 打印 LR |
-| `d5c8e19` | HardFault/MemManage/BusFault/UsageFault 改为打印 PC/LR/CFSR；上电延时增加到 1000ms |
-| `15dcadf` | **ETH_PAD_SIZE=2，解决 LwIP ARP 非对齐访问 HardFault（最终根本原因）** |
+| `a838c9d` | LAN8720 ping-only 固件适配：链接脚本修复、main.c 剥离、PE7 心跳灯 |
+| `3495682` | 修复 FatFs/syscall.c 编译错误 |
+| `421bcd0` | LAN8720 PHY 地址探测改用 BSR |
+| `0225cfe` | LAN8720 上电延时 300ms |
+| `88bf2a0` | ⚠️ Tx D-Cache Clean（后来证明不需要，#19 删除）+ EthIf 任务栈 512 |
+| `06e5c99` | LWIP_RAM_HEAP_POINTER 与 Rx 缓冲池地址冲突修复 |
+| `0604050` | FreeRTOS 堆 32KB + 上电延时 500ms |
+| `b07d2d8` | 心跳灯独立任务（heartbeatTask） |
+| `6cf010b` | LwIP `MEM_SIZE = 16KB` |
+| `a390aa8` | configASSERT/Error_Handler 改为打印 |
+| `d5c8e19` | 4 个 Fault Handler 打印 PC/LR/CFSR；上电延时 1000ms |
+| `15dcadf` | ⚠️ `ETH_PAD_SIZE=2`（后来证明会破坏接收，`8019de8` 删除） |
+| `2cbd9cc` | MPU Region 0 改为 NOT_SHAREABLE（缓解但未根治） |
+| `8a3db19` | SMEMCPY 强制字节拷贝（`#13` 修复） |
+| `f8b5989` | 移除 D-Cache 维护操作（#14、#19） |
+| `9e60f92` | 加入 ETH Rx/Tx 计数器和链路状态打印 |
+| `2bf8479` | PHY 链路去抖动 + 永不 Stop_IT（#16） |
+| `8019de8` | **移除 `ETH_PAD_SIZE`**（#15 修复，让接收链路恢复） |
+| `bdf031b` | ⭐ **MPU TEX/C/B 编码修正：B=1→B=0**（#18，所有 fault 的根本原因） |
 
 ---
 
 ## 八、当前状态与下一步
 
-**当前状态**：等待烧录 commit `15dcadf` 验证 ping 通
+**当前状态**：等待烧录 commit `bdf031b` 验证 ping 通
 
-**预期串口输出（上电后）**：
+**预期串口输出**：
 ```
 [ETH] LAN8720 addr=1, link=probed-OK
-[ETH] PHY link state: 2
+[ETH] PHY link state: 1 或 6（上电时未协商完）
+[ETH] raw link: ... -> 2  ← 协商完成
+[ETH] LINK UP confirmed: speed=16384 duplex=8192
+[ETH] stat rx=N tx=N raw=2 stable=2 up=1
 ```
-无任何 `[HARDFAULT]` 输出，PE7 持续 1Hz 闪烁。
+
+**预期行为**：
+- 无任何 `[HARDFAULT]` 输出
+- PE7 持续 1Hz 闪烁
+- ping 期间 rx 和 tx 同步增长
 
 **预期 Ping 结果**：
 ```powershell
@@ -306,7 +345,17 @@ ping 192.168.1.88 -S 192.168.1.100
 ```
 
 **Ping 通后下一步（按 CLAUDE.md 路线）**：
-- 阶段 2：恢复 FDCAN1 初始化，验证 CAN 收发（串口打印原始帧）
-- 阶段 3：恢复 QSPI，读 W25Q128 JEDEC ID（应得到 `EF 40 18`）
-- 阶段 4：恢复 SDMMC + FatFs，挂载 TF 卡，写 `/log/test.csv`
+- 阶段 2：恢复 FDCAN1 初始化，验证 CAN 收发
+- 阶段 3：恢复 QSPI，读 W25Q128 JEDEC ID
+- 阶段 4：恢复 SDMMC + FatFs，挂载 TF 卡
 - 阶段 5：以太网 + CAN 联调，Web 显示原始 CAN 帧
+
+---
+
+## 九、本轮调试的总反思
+
+1. **CubeMX 默认配置不能信** —— MPU、LwIP heap 指针、PHY 选型都有错
+2. **修一个问题不要急于下结论** —— `ETH_PAD_SIZE=2` 看似修了 ARP HardFault，实际只是改变了崩溃位置；真正根本原因是 MPU 编码
+3. **现象相似的 fault 可能源自同一原因** —— ARP/IP/cache 维护三类崩溃看似无关，根本都是 MPU `B` 位写错
+4. **诊断代码的价值远超修复代码** —— 没有 fault handler 的 PC 打印、没有 rx/tx 计数器、没有链路抖动打印，根本不可能定位到 #16、#18 这种深层问题
+5. **从硬件 ARM 规范文档查表是最可靠的** —— ARMv7-M ARM Table B3-13（TEX/C/B 编码）一查就发现 CubeMX 给的是 Implementation-defined 编码
