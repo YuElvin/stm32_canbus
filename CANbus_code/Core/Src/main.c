@@ -226,7 +226,12 @@ void MPU_Config(void)
   MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL1;
   MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
   MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
-  MPU_InitStruct.IsShareable = MPU_ACCESS_SHAREABLE;
+  /* IsShareable=SHAREABLE on Cortex-M7 + non-cacheable forces device-like
+     behavior that disallows unaligned access, causing UNALIGNED UsageFault
+     on str.w when accessing ARP/IP fields at byte-misaligned offsets.
+     NOT_SHAREABLE keeps Normal memory semantics (unaligned access OK) and
+     is fine for ETH DMA since CPU-DMA coherency is handled by non-cacheable. */
+  MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
   MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
   MPU_InitStruct.IsBufferable = MPU_ACCESS_BUFFERABLE;
 
