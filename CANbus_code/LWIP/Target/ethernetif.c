@@ -45,7 +45,7 @@ extern UART_HandleTypeDef huart2;
 #define ETHIF_TX_TIMEOUT (2000U)
 /* USER CODE BEGIN OS_THREAD_STACK_SIZE_WITH_RTOS */
 /* Stack size of the interface thread */
-#define INTERFACE_THREAD_STACK_SIZE ( 350 )
+#define INTERFACE_THREAD_STACK_SIZE ( 512 )
 /* USER CODE END OS_THREAD_STACK_SIZE_WITH_RTOS */
 /* Network interface name */
 #define IFNAME0 's'
@@ -432,6 +432,11 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
 
     Txbuffer[i].buffer = q->payload;
     Txbuffer[i].len = q->len;
+
+    /* Clean D-Cache for this pbuf's payload so ETH DMA sees up-to-date data.
+       pbuf payload lives in AXI SRAM (0x24000000) which is cacheable. */
+    SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
+                            (int32_t)((q->len + 31) & ~31U));
 
     if(i>0)
     {
