@@ -33,7 +33,9 @@
 
 /* Within 'USER CODE' section, code will be kept by default at each generation */
 /* USER CODE BEGIN 0 */
-
+#include <stdio.h>
+#include <string.h>
+extern UART_HandleTypeDef huart2;
 /* USER CODE END 0 */
 
 /* Private define ------------------------------------------------------------*/
@@ -294,9 +296,21 @@ static void low_level_init(struct netif *netif)
     return;
   }
 
+  /* USER CODE BEGIN PHY_POST_INIT */
+  /* Print detected PHY address to USART2 */
+  char msg[64];
+  sprintf(msg, "[ETH] PHY detected at address: %lu\r\n", LAN8742.DevAddr);
+  HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+  /* USER CODE END PHY_POST_INIT */
+
   if (hal_eth_init_status == HAL_OK)
   {
     PHYLinkState = LAN8742_GetLinkState(&LAN8742);
+
+    /* USER CODE BEGIN PHY_LINK_CHECK */
+    sprintf(msg, "[ETH] PHY link state: %ld\r\n", PHYLinkState);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+    /* USER CODE END PHY_LINK_CHECK */
 
     /* Get link state */
     if(PHYLinkState <= LAN8742_STATUS_LINK_DOWN)
