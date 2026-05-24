@@ -78,7 +78,14 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  /* Explicitly disable UNALIGN_TRP so that Cortex-M7 handles unaligned
+     word access in hardware (Normal memory only). LwIP frequently does
+     32-bit access at byte-aligned addresses (IP header in pbuf etc.)
+     and we use SMEMCPY override + non-cacheable D2 SRAM, so unaligned
+     access must work. */
+  SCB->CCR &= ~SCB_CCR_UNALIGN_TRP_Msk;
+  __DSB();
+  __ISB();
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
@@ -226,14 +233,13 @@ void MPU_Config(void)
   MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL1;
   MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
   MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
-  /* IsShareable=SHAREABLE on Cortex-M7 + non-cacheable forces device-like
-     behavior that disallows unaligned access, causing UNALIGNED UsageFault
-     on str.w when accessing ARP/IP fields at byte-misaligned offsets.
-     NOT_SHAREABLE keeps Normal memory semantics (unaligned access OK) and
-     is fine for ETH DMA since CPU-DMA coherency is handled by non-cacheable. */
+  /* Memory attributes: TEX=001, C=0, B=0, S=0 → Normal Outer/Inner Non-Cacheable.
+     CubeMX default (TEX=001, C=0, B=1) is "Implementation-defined" per ARMv7-M
+     spec, which on STM32H7 behaves Device-like: forbids unaligned access and
+     traps cache maintenance ops. Correct Normal-NC encoding requires B=0. */
   MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
   MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
-  MPU_InitStruct.IsBufferable = MPU_ACCESS_BUFFERABLE;
+  MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
 
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
