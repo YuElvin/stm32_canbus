@@ -118,7 +118,20 @@
 #define CHECKSUM_CHECK_ICMP6 0
 /*-----------------------------------------------------------------------------*/
 /* USER CODE BEGIN 1 */
-
+/* Override SMEMCPY to force byte-by-byte copy.
+   GCC otherwise inlines short memcpy() into 32-bit str.w instructions,
+   which trigger UNALIGNED UsageFault on STM32H7 when copying packed
+   struct fields (e.g. ARP hwaddr at offset 18, IP addresses inside
+   etharp_hdr) where the destination is only byte-aligned.
+   This is the safest fix for STM32H7 + LwIP + GCC inline-memcpy issue. */
+#include <stdint.h>
+static inline void __lwip_smemcpy(void *dst, const void *src, unsigned int len)
+{
+  volatile uint8_t *d = (volatile uint8_t *)dst;
+  const uint8_t *s = (const uint8_t *)src;
+  while (len--) { *d++ = *s++; }
+}
+#define SMEMCPY(dst,src,len)  __lwip_smemcpy(dst, src, len)
 /* USER CODE END 1 */
 
 #ifdef __cplusplus
