@@ -52,8 +52,10 @@
 /*----- Value in opt.h for MEM_ALIGNMENT: 1 -----*/
 #define MEM_ALIGNMENT 4
 /* Rx_PoolSection ends at 0x30004A83 (12 * RxBuff_t ~18.3KB from 0x30000100).
-   Heap must start AFTER the pool. 0x30005000 gives safe margin. */
+   Heap must start AFTER the pool. 0x30005000 gives safe margin.
+   MEM_SIZE: LwIP internal heap for pbuf/TCP buffers (in D2 SRAM, non-cacheable). */
 #define LWIP_RAM_HEAP_POINTER 0x30005000
+#define MEM_SIZE              (16 * 1024)
 /*----- Value supported for H7 devices: 1 -----*/
 #define LWIP_SUPPORT_CUSTOM_PBUF 1
 /*----- Value in opt.h for LWIP_ETHERNET: LWIP_ARP || PPPOE_SUPPORT -*/
