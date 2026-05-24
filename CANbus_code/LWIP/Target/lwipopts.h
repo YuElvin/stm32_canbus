@@ -51,6 +51,10 @@
 #define ETH_RX_BUFFER_SIZE 1536
 /*----- Value in opt.h for MEM_ALIGNMENT: 1 -----*/
 #define MEM_ALIGNMENT 4
+/* ETH_PAD_SIZE=2: adds 2-byte padding before Ethernet header so that the IP
+   payload starts at a 4-byte aligned address. Without this, ARP/IP struct
+   field accesses inside LwIP trigger UNALIGNED UsageFault on Cortex-M7. */
+#define ETH_PAD_SIZE 2
 /* Rx_PoolSection ends at 0x30004A83 (12 * RxBuff_t ~18.3KB from 0x30000100).
    Heap must start AFTER the pool. 0x30005000 gives safe margin.
    MEM_SIZE: LwIP internal heap for pbuf/TCP buffers (in D2 SRAM, non-cacheable). */
