@@ -765,6 +765,10 @@ int32_t ETH_PHY_IO_Init(void)
   /* Configure the MDIO Clock */
   HAL_ETH_SetMDIOClockRange(&heth);
 
+  /* LAN8720 requires power-on stabilization time before MDIO is accessible.
+     Module has no reset pin, so we must wait after power-on. */
+  HAL_Delay(300);
+
   return 0;
 }
 
