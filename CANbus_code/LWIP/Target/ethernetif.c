@@ -433,10 +433,14 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
     Txbuffer[i].buffer = q->payload;
     Txbuffer[i].len = q->len;
 
-    /* Clean D-Cache for this pbuf's payload so ETH DMA sees up-to-date data.
-       pbuf payload lives in AXI SRAM (0x24000000) which is cacheable. */
-    SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
-                            (int32_t)((q->len + 31) & ~31U));
+    /* Clean D-Cache: align address down to 32-byte cache line boundary,
+       extend size to cover the full cache lines touched by this payload. */
+    {
+      uint32_t addr = (uint32_t)q->payload;
+      uint32_t aligned = addr & ~31U;
+      uint32_t size = (uint32_t)q->len + (addr - aligned);
+      SCB_CleanDCache_by_Addr((uint32_t *)aligned, (int32_t)((size + 31U) & ~31U));
+    }
 
     if(i>0)
     {
