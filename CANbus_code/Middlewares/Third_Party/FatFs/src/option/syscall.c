@@ -22,6 +22,8 @@
 
 
 #include "../ff.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 
 #if _FS_REENTRANT
