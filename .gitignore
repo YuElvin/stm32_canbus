@@ -1,0 +1,32 @@
+# 构建产物
+CANbus_code/build/
+CANbus_code/Debug/
+CANbus_code/Release/
+*.o
+*.d
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.su
+
+# 备份目录（91MB，不进版本控制）
+CANbus_code_backup_*/
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.launch
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# CubeMX 临时
+.metadata/
+RemoteSystemsTempFiles/
