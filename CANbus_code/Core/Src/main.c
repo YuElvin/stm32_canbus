@@ -30,7 +30,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include <string.h>
+#include "FreeRTOS.h"
+#include "task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -187,7 +190,21 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+extern UART_HandleTypeDef huart2;
 
+static void uart_print(const char *s)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)s, strlen(s), 200);
+}
+
+void vAssertCalled(const char *file, uint32_t line)
+{
+  char buf[80];
+  taskDISABLE_INTERRUPTS();
+  sprintf(buf, "\r\n[ASSERT] %s:%lu\r\n", file, line);
+  uart_print(buf);
+  for(;;) {}
+}
 /* USER CODE END 4 */
 
  /* MPU Configuration */
@@ -259,11 +276,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  char buf[48];
   __disable_irq();
-  while (1)
-  {
-  }
+  sprintf(buf, "\r\n[ERROR_HANDLER] LR=0x%08lX\r\n",
+          (uint32_t)__builtin_return_address(0));
+  HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 200);
+  while (1) {}
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
