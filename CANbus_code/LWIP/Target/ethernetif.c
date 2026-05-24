@@ -776,7 +776,7 @@ int32_t ETH_PHY_IO_Init(void)
 
   /* LAN8720 requires power-on stabilization time before MDIO is accessible.
      Module has no reset pin, so we must wait after power-on. */
-  HAL_Delay(300);
+  HAL_Delay(500);
 
   return 0;
 }
