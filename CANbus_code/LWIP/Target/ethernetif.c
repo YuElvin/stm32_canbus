@@ -849,6 +849,16 @@ void ethernet_link_thread(void* argument)
   int32_t prev_link = -99;
   uint32_t print_tick = 0;
 
+  /* Debounce state: PHY state must be stable for STABLE_THRESHOLD reads
+     before being acted on. MDIO can return spurious values especially
+     during/around auto-negotiation, causing rapid 2<->5 oscillation
+     that destroys DMA if ETH is repeatedly stopped/started. */
+  int32_t debounced_link = -1;
+  int32_t candidate_link = -99;
+  uint32_t stable_count = 0;
+  const uint32_t STABLE_THRESHOLD = 5;  /* 5 * 100ms = 500ms stable */
+  uint32_t eth_started_once = 0;
+
   struct netif *netif = (struct netif *) argument;
 /* USER CODE BEGIN ETH link init */
 
@@ -860,30 +870,52 @@ void ethernet_link_thread(void* argument)
 
   /* Print link state changes and periodic stats */
   {
-    char dbg[96];
+    char dbg[112];
     if (PHYLinkState != prev_link) {
-      sprintf(dbg, "[ETH] link change: %ld -> %ld, netif_up=%d\r\n",
-              prev_link, PHYLinkState, netif_is_link_up(netif));
+      sprintf(dbg, "[ETH] raw link: %ld -> %ld\r\n", prev_link, PHYLinkState);
       HAL_UART_Transmit(&huart2, (uint8_t*)dbg, strlen(dbg), 100);
       prev_link = PHYLinkState;
     }
     if (HAL_GetTick() - print_tick >= 2000) {
       print_tick = HAL_GetTick();
-      sprintf(dbg, "[ETH] stat rx=%lu tx=%lu link=%ld up=%d\r\n",
-              eth_rx_count, eth_tx_count, PHYLinkState, netif_is_link_up(netif));
+      sprintf(dbg, "[ETH] stat rx=%lu tx=%lu raw=%ld stable=%ld up=%d\r\n",
+              eth_rx_count, eth_tx_count, PHYLinkState, debounced_link,
+              netif_is_link_up(netif));
       HAL_UART_Transmit(&huart2, (uint8_t*)dbg, strlen(dbg), 100);
     }
   }
 
-  if(netif_is_link_up(netif) && (PHYLinkState <= LAN8742_STATUS_LINK_DOWN))
+  /* Debounce: only act on PHY state when it has been stable for STABLE_THRESHOLD reads */
+  if (PHYLinkState == candidate_link) {
+    stable_count++;
+  } else {
+    candidate_link = PHYLinkState;
+    stable_count = 1;
+  }
+
+  if (stable_count < STABLE_THRESHOLD) {
+    osDelay(100);
+    continue;  /* not stable yet, do nothing */
+  }
+
+  /* Stable state confirmed - only act if it differs from current debounced state */
+  if (candidate_link == debounced_link) {
+    osDelay(100);
+    continue;
+  }
+  debounced_link = candidate_link;
+
+  /* Process the stable link change */
+  if(netif_is_link_up(netif) && (debounced_link <= LAN8742_STATUS_LINK_DOWN))
   {
-    HAL_ETH_Stop_IT(&heth);
+    /* Link went down - mark netif down but DON'T stop ETH (avoids DMA destruction
+       on transient MDIO glitches; ETH can sit idle with no link harmlessly). */
     netif_set_down(netif);
     netif_set_link_down(netif);
   }
-  else if(!netif_is_link_up(netif) && (PHYLinkState > LAN8742_STATUS_LINK_DOWN))
+  else if(!netif_is_link_up(netif) && (debounced_link > LAN8742_STATUS_LINK_DOWN))
   {
-    switch (PHYLinkState)
+    switch (debounced_link)
     {
     case LAN8742_STATUS_100MBITS_FULLDUPLEX:
       duplex = ETH_FULLDUPLEX_MODE;
@@ -916,9 +948,17 @@ void ethernet_link_thread(void* argument)
       MACConf.DuplexMode = duplex;
       MACConf.Speed = speed;
       HAL_ETH_SetMACConfig(&heth, &MACConf);
-      HAL_ETH_Start_IT(&heth);
+      /* Only call Start_IT once - never call Stop_IT to avoid DMA destruction */
+      if (!eth_started_once) {
+        HAL_ETH_Start_IT(&heth);
+        eth_started_once = 1;
+      }
       netif_set_up(netif);
       netif_set_link_up(netif);
+
+      char m[80];
+      sprintf(m, "[ETH] LINK UP confirmed: speed=%lu duplex=%lu\r\n", speed, duplex);
+      HAL_UART_Transmit(&huart2, (uint8_t*)m, strlen(m), 100);
     }
   }
 
