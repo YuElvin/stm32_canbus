@@ -51,10 +51,14 @@
 #define ETH_RX_BUFFER_SIZE 1536
 /*----- Value in opt.h for MEM_ALIGNMENT: 1 -----*/
 #define MEM_ALIGNMENT 4
-/* ETH_PAD_SIZE=2: adds 2-byte padding before Ethernet header so that the IP
-   payload starts at a 4-byte aligned address. Without this, ARP/IP struct
-   field accesses inside LwIP trigger UNALIGNED UsageFault on Cortex-M7. */
-#define ETH_PAD_SIZE 2
+/* ETH_PAD_SIZE INTENTIONALLY NOT SET (default 0):
+   STM32H7 ETH RX DMA writes frames starting at buff[0] without 2-byte padding.
+   If ETH_PAD_SIZE=2 is set, LwIP's etharp_input/ethernet_input will call
+   pbuf_remove_header(ETH_PAD_SIZE) to skip the padding, but since no padding
+   exists, this skips into the middle of the ETH header, corrupting the parsed
+   frame and causing all incoming ARP requests to be silently dropped (no reply).
+   The original UNALIGNED HardFault that ETH_PAD_SIZE was meant to fix is now
+   solved by the SMEMCPY override below (byte-by-byte copy). */
 /* Rx_PoolSection ends at 0x30004A83 (12 * RxBuff_t ~18.3KB from 0x30000100).
    Heap must start AFTER the pool. 0x30005000 gives safe margin.
    MEM_SIZE: LwIP internal heap for pbuf/TCP buffers (in D2 SRAM, non-cacheable). */
