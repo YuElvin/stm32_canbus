@@ -211,30 +211,54 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 | 0 | 链接脚本缺 ETH DMA 段 | ETH DMA 描述符未落在 D2 SRAM | CubeMX 未生成 `.RxDescripSection` 等段定义 | 手动在 ld 脚本加 `.lwip_sec` 段，强制映射到 0x30000000 | `STM32H750XX_FLASH.ld` |
 | 1 | FatFs 编译错误 | `pvPortMalloc` 未声明 | `syscall.c` 缺少 FreeRTOS 头文件 | 加 `#include "FreeRTOS.h"` 和 `#include "task.h"` | `FatFs/src/option/syscall.c` |
 | 2 | PHY 地址识别错误（31） | 串口输出 `addr=31` | LAN8720 无 SMR 寄存器，LAN8742 驱动的 SMR 扫描失效 | 改用 BSR 寄存器探测地址 0 和 1 | `LWIP/Target/ethernetif.c` |
-| 3 | 冷启动 PHY 探测失败 | 上电时 addr=31，Reset 后 addr=1 | LAN8720 无复位引脚，上电后 MDIO 未稳定，读到无效值 | `ETH_PHY_IO_Init()` 加 `HAL_Delay(300)` | `LWIP/Target/ethernetif.c` |
+| 3 | 冷启动 PHY 探测失败 | 上电时 addr=31，Reset 后 addr=1 | LAN8720 无复位引脚，上电后 MDIO 未稳定，读到无效值 | `ETH_PHY_IO_Init()` 加 `HAL_Delay(1000)` | `LWIP/Target/ethernetif.c` |
 | 4 | 多网卡路由走错 | ping 回复来自 10.0.40.9 | Windows 默认路由走 WiFi | ping 加 `-S 192.168.1.100` 指定源地址 | — （电脑配置） |
-| 5 | Ping 无回复（根本问题） | 全部超时或"无法访问目标主机" | 发送路径缺 `SCB_CleanDCache_by_Addr`，DMA 读到脏 Cache 数据 | `low_level_output()` 每个 pbuf 发送前 Clean D-Cache | `LWIP/Target/ethernetif.c` |
-| 6 | 接收任务栈太小 | 可能引发栈溢出、接收崩溃 | `INTERFACE_THREAD_STACK_SIZE = 350`（1400B）太小 | 增大到 512 words（2048B） | `LWIP/Target/ethernetif.c` |
+| 5 | Ping 无回复 | 全部超时或"无法访问目标主机" | 发送路径缺 `SCB_CleanDCache_by_Addr`，DMA 读到脏 Cache 数据 | `low_level_output()` 每个 pbuf 发送前 Clean D-Cache（地址向下对齐到 32 字节） | `LWIP/Target/ethernetif.c` |
+| 6 | 接收任务栈太小 | 可能引发栈溢出 | `INTERFACE_THREAD_STACK_SIZE = 350`（1400B）太小 | 增大到 512 words（2048B） | `LWIP/Target/ethernetif.c` |
+| 7 | LWIP_RAM_HEAP_POINTER 与 Rx 缓冲池冲突 | ping 无回复，ARP 数据被覆盖 | Rx_PoolSection 结束于 0x30004A83，堆起点 0x30004000 落在 pool 内部，LwIP 堆分配覆盖 Rx 缓冲池 | `LWIP_RAM_HEAP_POINTER` 从 0x30004000 改为 0x30005000 | `LWIP/Target/lwipopts.h` |
+| 8 | FreeRTOS 堆不足，程序卡死 | PE7 常亮或不亮，MX_LWIP_Init 卡死 | `configTOTAL_HEAP_SIZE=15360`（15KB）不够，4 个任务+队列+信号量超出上限，tcpip_init 内部任务创建失败 | 15360 → 32768（32KB） | `Core/Inc/FreeRTOSConfig.h` |
+| 9 | 心跳灯与 LwIP 耦合，无法区分崩溃类型 | PE7 常亮/不亮/闪几下熄灭，无法判断是 LwIP 卡死还是系统崩溃 | 心跳和 LwIP 初始化在同一任务，LwIP 任何阻塞都影响心跳 | 新增独立 heartbeatTask（osPriorityLow），defaultTask 只做 LwIP 初始化后退出 | `Core/Src/freertos.c` |
+| 10 | LwIP 堆未定义 MEM_SIZE，默认 1600B 不够 | PE7 闪几下后熄灭，configASSERT 触发 | `lwipopts.h` 未定义 `MEM_SIZE`，LwIP 使用默认 1600 字节，pbuf/TCP 缓冲区分配失败触发 LWIP_ASSERT | `MEM_SIZE = 16 * 1024` | `LWIP/Target/lwipopts.h` |
+| 11 | configASSERT 和 fault handler 静默死循环 | 崩溃后无任何输出，无法定位 | 原 `configASSERT` 直接 `taskDISABLE_INTERRUPTS+for(;;)`，fault handler 也是 `while(1)` | configASSERT 改为打印文件名行号；HardFault/MemManage/BusFault/UsageFault 改为从栈帧读 PC/LR/CFSR 打印 | `FreeRTOSConfig.h`、`stm32h7xx_it.c`、`main.c` |
+| 12 | LwIP ARP 非对齐访问 HardFault（根本原因） | 每次上电必崩，`[HARDFAULT] PC=0x0800DAA2 CFSR=0x01000000` | 以太网帧头 14 字节，ARP 头内部字段偏移 18 字节，不是 4 字节对齐；LwIP SMEMCPY 展开为 `str.w`，Cortex-M7 UNALIGN_TRP 触发 UsageFault→HardFault | `ETH_PAD_SIZE=2`，在 pbuf 前插入 2 字节填充，使所有字段 4 字节对齐 | `LWIP/Target/lwipopts.h` |
 
 ---
 
 ## 六、关键经验总结
 
-### STM32H7 以太网调试三大坑
+### STM32H7 以太网调试坑（按踩坑顺序）
 
-1. **D-Cache Clean（发送）**：pbuf payload 在 Cacheable 的 SRAM 里，发送前必须 `SCB_CleanDCache_by_Addr`，否则 DMA 读到旧数据，发出去的包内容错误。
+1. **链接脚本必须手动加 ETH DMA 段**：CubeMX 不会自动生成 `.RxDescripSection` 等段，必须手动在 ld 脚本里强制映射到 D2 SRAM（0x30000000）。
 
-2. **D-Cache Invalidate（接收）**：DMA 写完 Rx Buffer 后，CPU 读之前必须 `SCB_InvalidateDCache_by_Addr`，否则 CPU 读到的是 Cache 里的旧数据。（HAL_ETH_RxLinkCallback 里已有，无需改动）
+2. **D-Cache Clean（发送）**：pbuf payload 在 Cacheable 的 AXI SRAM，发送前必须 `SCB_CleanDCache_by_Addr`，地址要向下对齐到 32 字节 cache line 边界，否则 DMA 读到旧数据，发出去的包内容错误。
 
-3. **ETH DMA 描述符必须在 D2 SRAM**：ETH DMA 只能访问 D2 SRAM（0x30000000），且必须配置 MPU Non-Cacheable。CubeMX 生成的链接脚本不会自动保证这一点，必须手动在 ld 脚本里强制地址。
+3. **D-Cache Invalidate（接收）**：DMA 写完 Rx Buffer 后，CPU 读之前必须 `SCB_InvalidateDCache_by_Addr`。`HAL_ETH_RxLinkCallback` 里已有，不要删。
+
+4. **LWIP_RAM_HEAP_POINTER 必须在 Rx 缓冲池之后**：CubeMX 默认值 0x30004000 会与 Rx_PoolSection 重叠（pool 约 18.3KB，结束于 0x30004A83）。必须通过 `.map` 文件确认 pool 实际结束地址，再设置堆起点。
+
+5. **必须显式定义 MEM_SIZE**：LwIP 默认 MEM_SIZE 只有 1600 字节，远不够用，必须在 `lwipopts.h` 里显式设置（本项目用 16KB）。
+
+6. **ETH_PAD_SIZE=2 是必须的**：以太网帧头 14 字节，不加 padding 时 ARP/IP 结构体字段会落在非 4 字节对齐地址，Cortex-M7 的 UNALIGN_TRP 触发 UsageFault→HardFault。这是 LwIP 在 STM32H7 上的已知问题。
+
+7. **FreeRTOS 堆要足够大**：LwIP + ETH 需要同时运行 4 个任务（defaultTask/tcpip_thread/EthIf/EthLink），加上队列、信号量、TCB 开销，15KB 不够，至少需要 32KB。
 
 ### LAN8720 使用注意
 
-1. **没有 SMR 寄存器**：不能用 LAN8742 驱动的 SMR 自动扫描 PHY 地址，要改用 BSR（标准寄存器，所有 PHY 都有）探测。
+1. **没有 SMR 寄存器**：不能用 LAN8742 驱动的 SMR 自动扫描 PHY 地址，要改用 BSR（标准寄存器，所有 PHY 都有）探测地址 0 和 1。
 
-2. **没有 RESET 引脚**（模块未引出）：上电后必须等待 ≥300ms 再初始化 MDIO，否则读不到有效值。如果后续自己画板，强烈建议把 LAN8720 的 NRST 引脚接到 STM32 的一个 GPIO。
+2. **没有 RESET 引脚**（模块未引出）：上电后必须等待 ≥1000ms 再初始化 MDIO，否则读不到有效值。如果后续自己画板，强烈建议把 LAN8720 的 NRST 引脚接到 STM32 的一个 GPIO。
 
 3. **PHY 地址由硬件引脚决定**：该模块地址为 1（由 PHYAD[2:0] 引脚决定，模块内部已固定）。
+
+### 调试方法经验
+
+1. **心跳灯要独立任务**：不要把心跳和业务逻辑放在同一个任务，否则业务卡死时无法区分是"业务卡死"还是"系统崩溃"。
+
+2. **configASSERT 必须打印**：默认的 `taskDISABLE_INTERRUPTS+for(;;)` 完全静默，改为打印文件名和行号后立即能定位问题。
+
+3. **Fault Handler 必须打印 PC/LR/CFSR**：HardFault 等异常的默认 `while(1)` 无法定位，从异常栈帧读出 PC 后用 `arm-none-eabi-addr2line` 可以精确到源码行。
+
+4. **用 .map 文件验证内存布局**：每次修改内存相关配置后，检查 `build/CANbus_code.map` 确认各段实际地址，避免地址冲突。
 
 ### Windows 多网卡 Ping 问题
 
@@ -253,19 +277,27 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 | `3495682` | 修复 FatFs/syscall.c 编译错误，完成首次成功构建（75KB，零错误） |
 | `421bcd0` | LAN8720 PHY 地址探测改用 BSR，绕过 LAN8742 的 SMR 扫描 |
 | `0225cfe` | LAN8720 上电延时 300ms，解决冷启动 PHY 探测失败 |
-| `88bf2a0` | **D-Cache Clean on Tx + 增大 EthIf 任务栈**（解决 ping 不通根本原因） |
+| `88bf2a0` | D-Cache Clean on Tx（地址对齐修正）+ 增大 EthIf 任务栈 |
+| `06e5c99` | 修复 LWIP_RAM_HEAP_POINTER 与 Rx 缓冲池地址冲突（通过 .map 文件确认） |
+| `0604050` | FreeRTOS 堆扩大到 32KB + 上电延时增加到 500ms |
+| `b07d2d8` | 心跳灯独立任务（heartbeatTask），defaultTask 只做 LwIP 初始化后退出 |
+| `6cf010b` | 显式定义 MEM_SIZE=16KB，解决 LwIP 堆耗尽导致 assert 崩溃 |
+| `a390aa8` | configASSERT 改为串口打印文件名行号；Error_Handler 打印 LR |
+| `d5c8e19` | HardFault/MemManage/BusFault/UsageFault 改为打印 PC/LR/CFSR；上电延时增加到 1000ms |
+| `15dcadf` | **ETH_PAD_SIZE=2，解决 LwIP ARP 非对齐访问 HardFault（最终根本原因）** |
 
 ---
 
 ## 八、当前状态与下一步
 
-**当前状态**：等待第四轮烧录测试验证 ping 通
+**当前状态**：等待烧录 commit `15dcadf` 验证 ping 通
 
 **预期串口输出（上电后）**：
 ```
 [ETH] LAN8720 addr=1, link=probed-OK
 [ETH] PHY link state: 2
 ```
+无任何 `[HARDFAULT]` 输出，PE7 持续 1Hz 闪烁。
 
 **预期 Ping 结果**：
 ```powershell
