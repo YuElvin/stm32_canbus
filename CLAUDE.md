@@ -1,231 +1,160 @@
-# STM32H750 CAN 网关项目 — 需求理解备忘
+# CLAUDE.md
 
-> 本文件由 Claude 根据 `STM32项目沟通.docx` 整理，用于在动手之前与你对齐理解。
-> 如有错漏请直接修改本文件，或在对话中指出，确认后再开始下一步开发。
-
----
-
-## 一、一句话定义
-
-基于 STM32H750VBT6 的 **CAN/CAN-FD 数据采集解析网关 + 本地以太网 Web 配置终端 + 规则控制器 + 日志记录器**，后续可通过 ESP32-C3 SPI 扩展 WiFi 访问。
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ---
 
-## 二、硬件清单（已确认）
+## 项目定位
 
-| 部件 | 型号/规格 | 接口 | 备注 |
-|---|---|---|---|
-| 主控核心板 | YD-STM32H750VBT6（淘宝现成开发板） | — | 板载 25MHz 晶振、32.768kHz、TF 卡座、W25QXX、USB-C、SWD |
-| 网络 PHY | LAN8720 模块 | RMII | 模块自带 50MHz 有源晶振，未引出复位脚 |
-| CAN 收发器 | TJA1042 模块 | — | 5V 供电、支持 CAN-FD、无 STB/EN，**RXD 电平待实测** |
-| TF 卡 | 板载卡座 | SDMMC1 4 位 | PC8/PC9/PC10/PC11/PC12/PD2 |
-| 外部 Flash | W25Q128（板载） | QUADSPI Bank1 | PB2/PB10/PD11/PD12/PE2/PD13，16MB |
-| 继电器 | 2 路模块 | GPIO | 3.3V 供电，跳线选高/低电平触发，**第一版按高电平触发** |
-| 调试串口 | USB-TTL | USART2 | PD5/PD6，115200 8N1 |
-| 二期 WiFi | ESP32-C3-MINI-1 | SPI（首选） | 一期不接，二期再决定具体 SPI 实例 |
+STM32H750VBT6 CAN/CAN-FD 数据采集解析网关。当前处于**阶段 1（以太网验证）**，部分外设初始化已注释掉。最终目标：CAN 收发 + DBC 解析 + 规则控制继电器 + 以太网 Web 配置界面。详细需求见 `CLAUDE.md`（用户版），调试历史见 `DEBUG_LOG.md`。
 
 ---
 
-## 三、引脚分配 v1（与 `CANbus_code.ioc` 对齐）
+## 编译命令
 
-```
-以太网（LAN8720，RMII）
-  PA1   ETH_RMII_REF_CLK     ← LAN8720 nINT/RETCLK（50MHz 输入）
-  PA2   ETH_MDIO
-  PA7   ETH_RMII_CRS_DV
-  PC1   ETH_MDC
-  PC4   ETH_RMII_RXD0
-  PC5   ETH_RMII_RXD1
-  PB11  ETH_RMII_TX_EN
-  PB12  ETH_RMII_TXD0
-  PB13  ETH_RMII_TXD1
+工具链需手动指定路径（make 和 arm-none-eabi-gcc 装在非标准位置）：
 
-QSPI（W25Q128）
-  PB2   QUADSPI_CLK
-  PB10  QUADSPI_BK1_NCS
-  PD11  QUADSPI_BK1_IO0
-  PD12  QUADSPI_BK1_IO1
-  PE2   QUADSPI_BK1_IO2
-  PD13  QUADSPI_BK1_IO3
+```bash
+MAKE="/c/Users/ben.luo/AppData/Local/Microsoft/WinGet/Packages/ezwinports.make_Microsoft.Winget.Source_8wekyb3d8bbwe/bin/make.exe"
+ARM_PATH="/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 Rel1/bin"
+export PATH="$ARM_PATH:$PATH"
+cd "/d/Ben/stm32_canbus_claude/CANbus_code"
 
-SDMMC1（TF 卡）
-  PC8/PC9/PC10/PC11  D0/D1/D2/D3
-  PC12               时钟
-  PD2                命令
-
-FDCAN1（一期单路 CAN）
-  PD0   FDCAN1_RX
-  PD1   FDCAN1_TX
-
-继电器
-  PE7   Relay1（GPIO 输出，上电默认关）
-  PE8   Relay2（GPIO 输出，上电默认关）
-
-调试
-  PD5   USART2_TX → USB-TTL RX
-  PD6   USART2_RX ← USB-TTL TX
-  PA13  SWDIO
-  PA14  SWCLK
+"$MAKE"              # 增量编译
+"$MAKE" clean        # 清除 build/（Windows 下有问题，改用 rm -rf build/）
+rm -rf build/ && "$MAKE"  # 全量编译
 ```
 
-预留：FDCAN2 二期接 PB5/PB6（待 SPI 方案确定后再确认是否冲突）。
+须在 **Git Bash** 中运行（PowerShell 的 make 找不到 shell，会失败）。
+
+编译输出在 `CANbus_code/build/`：`.elf`（调试）、`.hex`（烧录）、`.bin`（烧录）。
+
+**当前 Flash 占用**：约 75KB / 128KB（调试优化 `-Og`）。
 
 ---
 
-## 四、功能需求（按优先级）
+## 工程结构
 
-### 4.1 一期 MVP（必须有）
-
-1. **CAN 收发**
-   - FDCAN1 一路，标准帧 + 扩展帧
-   - 波特率 Web 可选：125K / 250K / 500K / 1M
-   - CAN-FD 支持（仲裁段 500K + 数据段 2M/4M，BRS 可选）
-   - 周期发送 CAN 报文
-   - 支持过滤器、总线错误统计
-
-2. **DBC 解析与编码**
-   - Web 上传 DBC 文件，存到 TF 卡 `/dbc/`
-   - 多 DBC 切换（当前激活的写入 `/config/config.json`）
-   - **接收方向**：解析 BO_/SG_，输出物理值 `物理值 = 原始值 × factor + offset`
-   - **发送方向**：根据 DBC 反算原始值，按比特位填入 CAN data
-   - 支持 Intel/Motorola 字节序、有/无符号、factor/offset、min/max、unit
-   - 一期不做：Multiplex、J1939、复杂 BA_ 属性、VAL_ 枚举
-
-3. **数据日志**
-   - 写入 TF 卡 `/log/`
-   - **格式默认 CSV**，可选保存原始帧 / 解析信号 / 同时保存
-   - **采样周期 100ms**
-   - 文件命名：启动时按当前时间生成（如 `20260524_153000.csv`）
-   - 不要求断电不丢最后几秒数据
-   - Web 可下载日志
-
-4. **规则引擎控制继电器**
-   - Web 配置规则：信号名 + 比较运算符 + 阈值 + 目标继电器
-   - **手动模式优先级最高**（手动 > 失效保护 > 自动规则 > 默认）
-   - **滞回控制**（双阈值：开启阈值 / 关闭阈值）
-   - **触发延时**（持续 N 毫秒才动作）
-   - **CAN 超时安全动作**（N 秒未收到关键报文 → 继电器进入预设状态）
-   - 上电默认状态可配置
-
-5. **以太网 Web**
-   - **固定 IP 192.168.1.88**，掩码 255.255.255.0，网关 192.168.1.1
-   - 局域网访问，**不需要登录密码**
-   - 中文界面，简洁明亮暖色调风格
-   - 实时刷新 **1 秒**
-   - REST API + 后续可升级 SSE / WebSocket 推送
-
-6. **Web 页面结构**
-   - 概览（系统状态 / CAN 状态 / 当前 DBC / TF 卡 / 继电器）
-   - 实时数据（信号表格、按消息筛选、按名称搜索）
-   - DBC 管理（上传、列表、切换、删除、查看）
-   - CAN 发送（原始帧、按 DBC 编辑发送、周期发送列表）
-   - 日志（开关、模式、文件列表、下载/删除）
-   - 规则（添加、阈值、滞回、延时、目标、超时动作）
-   - 系统设置（IP、波特率、CAN-FD 参数、时间、重启）
-
-### 4.2 二期扩展
-
-- 第 2 路 FDCAN
-- ESP32-C3 SPI WiFi（推荐先用 UART 验证，再切 SPI）
-- W25Q128 做配置、最小 Web、当前 DBC 的 Flash 备份
+```
+CANbus_code/
+├── CANbus_code.ioc          # CubeMX 配置文件（不要手动修改引脚相关代码，改这里再重新生成）
+├── STM32H750XX_FLASH.ld     # 链接脚本（手动添加了 .lwip_sec 段）
+├── Makefile                 # CubeMX 生成，工具链前缀 arm-none-eabi-
+├── Core/Src/
+│   ├── main.c               # 外设初始化顺序（部分已注释）+ MPU 配置
+│   ├── freertos.c           # FreeRTOS 任务定义（当前只有 defaultTask）
+│   ├── fdcan.c              # FDCAN1 HAL 配置（当前未 init）
+│   ├── gpio.c               # PE7/PE8 继电器 GPIO
+│   └── usart.c              # USART2 115200 8N1
+├── LWIP/
+│   ├── App/lwip.c           # IP 配置（192.168.1.88）、netif 注册、链路线程
+│   └── Target/
+│       ├── ethernetif.c     # ETH DMA 接口（含大量手动修改，见下）
+│       └── lwipopts.h       # LwIP 参数（LWIP_RAM_HEAP_POINTER、校验硬件卸载）
+├── FATFS/                   # FatFs（当前未 init）
+└── Drivers/BSP/Components/lan8742/  # PHY 驱动（用于 LAN8720，寄存器兼容）
+```
 
 ---
 
-## 五、存储分工
+## 关键架构约束
 
-| 介质 | 用途 |
+### STM32H7 D-Cache 规则（违反会导致以太网静默失败）
+
+| 操作 | 位置 | 要求 |
+|---|---|---|
+| 发送（Tx） | `low_level_output()` pbuf 遍历循环内 | **必须** `SCB_CleanDCache_by_Addr(payload, (len+31)&~31)` |
+| 接收（Rx） | `HAL_ETH_RxLinkCallback()` | 已有 `SCB_InvalidateDCache_by_Addr`，不要删 |
+| DMA 描述符 | `.lwip_sec` 段 | 强制放在 0x30000000（D2 SRAM，MPU Non-Cacheable） |
+| LwIP 堆 | `lwipopts.h` | `LWIP_RAM_HEAP_POINTER 0x30004000`（D2 SRAM 内） |
+
+MPU Region 0（0x30000000, 256KB）= Non-Cacheable Bufferable（ETH DMA 用）。
+MPU Region 1（0x24000000, 512KB）= Cacheable（代码/数据，pbuf payload 在这里）。
+
+### LAN8720 PHY 驱动适配
+
+驱动文件是 `lan8742.c`（CubeMX 选型错误），但 LAN8720 寄存器与 LAN8742 基本兼容，**唯一的例外是 SMR 寄存器（reg 0x12）**：
+
+- **LAN8742** 有 SMR，`LAN8742_Init()` 通过读 SMR bit[4:0] 自动扫描 PHY 地址。
+- **LAN8720** 无 SMR，扫描会得到随机地址。
+
+**解决方案**（已在 `ethernetif.c` `PHY_PRE_CONFIG` 段实现）：上电后用 BSR（reg 0x01，所有 PHY 都有的标准寄存器）探测地址 0 和 1，找到有效值后直接设置 `LAN8742.DevAddr` 并置 `Is_Initialized=1`，跳过 `LAN8742_Init()` 内的 SMR 扫描。
+
+### LAN8720 上电延时
+
+`ETH_PHY_IO_Init()` 中有 `HAL_Delay(300)`。LAN8720 模块无 RESET 引脚引出，上电后需等待约 300ms MDIO 才稳定。**不能删除**，否则冷启动 PHY 探测失败。
+
+### 外设初始化顺序（`main.c`）
+
+当前只启用以太网验证所需的外设：
+```c
+MX_GPIO_Init();
+// MX_FDCAN1_Init();   ← 注释，待阶段 2 恢复
+// MX_QUADSPI_Init();  ← 注释，待阶段 3 恢复
+// MX_SDMMC1_SD_Init();← 注释，待阶段 4 恢复
+MX_USART2_UART_Init();
+// MX_FATFS_Init();    ← 注释，待阶段 4 恢复
+// 以太网在 FreeRTOS 调度启动后由 defaultTask 调用 MX_LWIP_Init()
+```
+
+恢复外设时按顺序逐个打开，每次验证通过后再开下一个。
+
+### FreeRTOS 任务（当前）
+
+只有一个任务 `defaultTask`（`freertos.c`）：初始化 LwIP → PE7 心跳灯 500ms toggle。以太网接收由 `low_level_init()` 在 netif 初始化时创建的 `EthIf` 任务处理（栈 512 words），链路监控由 `lwip.c` 创建的 `EthLink` 任务处理（栈 1024 words）。
+
+---
+
+## 已知问题和规避方法
+
+### CubeMX 重新生成会覆盖手动修改
+
+以下文件有手动修改，CubeMX 重新生成时**会被覆盖**，需要在生成后手动还原：
+
+| 文件 | 修改内容 |
 |---|---|
-| 内部 Flash 128KB | 仅 bootloader 和关键代码（容量受限） |
-| **W25Q128 16MB** | 一期：仅做硬件验证（JEDEC ID 读取、读写校验）。二期：配置备份、最小 Web 页面、当前 DBC 索引 |
-| **TF 卡** | 主存储：Web 静态文件 `/www/`、DBC `/dbc/`、日志 `/log/`、配置 `/config/` |
+| `STM32H750XX_FLASH.ld` | 末尾加了 `.lwip_sec` 段定义 |
+| `LWIP/Target/ethernetif.c` | PHY 探测逻辑、300ms 延时、Tx D-Cache Clean、EthIf 栈大小、串口打印 |
+| `Core/Src/freertos.c` | defaultTask 改为心跳灯 |
+| `Core/Src/main.c` | 注释了 FDCAN/QSPI/SDMMC/FATFS 初始化 |
+| `Middlewares/Third_Party/FatFs/src/option/syscall.c` | 加了 FreeRTOS.h / task.h include |
+
+建议：修改 ioc 后先 `git stash`，生成后 `git diff` 对比，只接受 ioc 本身的变化。
+
+### make 在 PowerShell 中失败
+
+make 依赖 sh.exe 来执行 `mkdir` 等命令，PowerShell 没有。必须用 Git Bash。
+
+### Flash 容量限制（128KB）
+
+HAL + FreeRTOS + LwIP + FatFs 全部开启后接近上限。后续如果超出：
+- 先改优化级别为 `-Os`（Makefile 中 `OPT = -Os`）
+- 长期方案：W25Q128 XIP（bootloader 放内部 Flash，主程序 Memory Mapped 到 QSPI）
+
+---
+
+## 引脚分配摘要
 
 ```
-TF 卡目录结构：
-/
-├── www/        index.html、app.js、style.css、assets/
-├── dbc/        *.dbc
-├── log/        YYYYMMDD_HHMMSS.csv
-├── config/     config.json、rules.json、can_tx.json
-└── sys/        version.txt
+ETH RMII : PA1/PA2/PA7/PC1/PC4/PC5/PB11/PB12/PB13
+QSPI W25Q128: PB2/PB10/PD11/PD12/PE2/PD13
+SDMMC1 TF卡: PC8/PC9/PC10/PC11/PC12/PD2
+FDCAN1  : PD0(RX) / PD1(TX)
+继电器  : PE7(Relay1) / PE8(Relay2)  — 高电平触发
+USART2  : PD5(TX) / PD6(RX)  — 115200 8N1
+SWD     : PA13 / PA14
 ```
 
----
-
-## 六、软件架构
-
-**技术栈**：STM32CubeMX + HAL + FreeRTOS + LwIP + FatFs + 自研轻量 DBC 解析器 + HTTP REST + 后续 SSE
-**开发环境**：VSCode + Arm GNU 工具链 + CubeMX 生成的 Makefile（已具备）+ Cortex-Debug + ST-Link
-
-### FreeRTOS 任务划分（一期）
-
-| 任务 | 优先级 | 职责 |
-|---|---|---|
-| AppMain | — | 系统初始化、状态监控 |
-| CanRx | 高 | FDCAN FIFO → 接收队列 |
-| CanTx | 高 | 手动 / 周期 / 按 DBC 编码发送 |
-| DbcDecode | 中高 | 接收队列 → DBC 解码 → 信号缓存 |
-| Rule | 中高 | 规则扫描 / 事件驱动 → 控制继电器 |
-| Web | 中 | HTTP 服务、API、文件上传下载 |
-| Logger | 中低 | 100ms 快照 → RAM 缓存 → 批量写入 TF 卡 |
-| Config | 低 | 配置保存、DBC 切换、QSPI 写入 |
-
-### 关键互斥
-
-- **TF 卡互斥锁**：日志写入、Web 读静态文件、DBC 加载、配置读写都必须先拿锁
-- **信号缓存**：DBC 解码 → 规则 + 日志 + Web 多读者，建议读写锁或快照机制
+PE7/PE8 上电默认低电平（继电器释放）。
 
 ---
 
-## 七、已识别的关键风险
+## 当前验证状态
 
-1. **STM32H7 以太网 + D-Cache + MPU**（最高风险）：DMA 描述符必须放在 D2 SRAM，MPU 配置成不可缓存，发送前 Clean、接收后 Invalidate Cache
-2. **CubeMX 选了 LAN8742 但硬件是 LAN8720**：寄存器布局兼容（BCR/BSR/SMR/PHYSCSR 一致），现有 lan8742 驱动可直接复用，但需实测 PA1 的 50MHz 时钟和 PHY 地址
-3. **CAN 模块 5V 供电的 RXD 电平**：必须用万用表测空闲电压，5V 直接接 STM32 会损坏 IO
-4. **内部 Flash 仅 128KB**：HAL + RTOS + LwIP + FatFs 一起编译就很吃紧，二期可能需要切到 W25Q128 XIP（bootloader + Memory Mapped 模式）
-5. **DBC 反向编码**：发送侧的比特位填充比解析更难，Motorola 字节序容易写错
-6. **TF 卡阻塞**：单次写延迟可能超过 50ms，必须 RAM 缓存 + 批量刷盘，且与 Web 静态资源读取存在竞争
-
----
-
-## 八、当前工程状态
-
-- ✅ CubeMX 工程已生成（`CANbus_code.ioc`），Makefile 和启动文件齐全
-- ✅ 引脚分配与 v1 方案一致
-- ✅ 已备份为 `CANbus_code_backup_20260524`
-- ⚠️ CubeMX PHY 选的是 LAN8742，需在代码层确认能驱动 LAN8720
-- ⚠️ 链接脚本 `STM32H750XX_FLASH.ld` **缺少 `.RxDescripSection` / `.TxDescripSection` / `.Rx_PoolSection` 段定义**，但 `ethernetif.c` 引用了它们 —— 这是必须修复的
-- ⚠️ 主程序 `main.c` 当前会初始化 FDCAN / QSPI / SDMMC / USART / FATFS 等所有外设，单独验证以太网时建议剥离
-
----
-
-## 九、分阶段开发路线
-
-| 阶段 | 目标 | 验收标准 |
-|---|---|---|
-| **0. 资料和电平实测** | 确认 PA1 有 50MHz 时钟、CAN 模块 RXD 电平、PHY 地址 | 示波器和万用表数据 |
-| **1. 单独验证 LAN8720** | 剥离非以太网外设，固定 IP + ping | `ping 192.168.1.88` 稳定通 |
-| 2. 串口 + GPIO + 继电器 | USART2 printf、PE7/PE8 继电器闪 | 串口有输出、继电器能吸合 |
-| 3. QSPI W25Q128 | 读 JEDEC ID、4KB 扇区擦除、256B 页编程、读回校验 | 读到 `EF 40 18` |
-| 4. SDMMC + FatFs | 挂载 TF 卡、写 `/log/test.csv` | 文件能在电脑上打开 |
-| 5. FDCAN1 | 内部回环 → 正常模式 + 分析仪收发 | CAN 分析仪能看到帧 |
-| 6. CAN + Web 原始帧 | Web 显示 CAN 原始数据、Web 手动发帧 | 浏览器能实时看到帧 |
-| 7. 日志 | CSV 写 TF 卡、Web 下载日志 | 下载的文件能正常打开 |
-| 8. DBC 解析 | Web 上传 DBC、解析显示物理值 | 信号值对得上 |
-| 9. 规则引擎 | Web 配置 → 控制继电器 + 滞回 / 延时 | 规则触发正确 |
-| 10. DBC 编辑发送 | Web 表单按 DBC 编码发送 | 分析仪收到正确帧 |
-| 11. ESP32-C3 WiFi（二期） | 先用 UART 验证，再切 SPI | 手机连 AP 后能访问 Web |
-
----
-
-## 十、当前任务
-
-**你当前明确的任务**：
-> 适配 LAN8720 PHY，编译一份只验证 LAN8720 的固件，让电脑能 ping 通
-
-**Claude 计划**（待你确认本文档后执行）：
-1. 修复链接脚本，补上 ETH DMA 段定义（`.RxDescripSection` / `.TxDescripSection` / `.Rx_PoolSection`）
-2. 确认 lan8742 驱动可复用驱动 LAN8720（识别 PHY 地址、读 BSR / PHYSCSR）
-3. 把 `main.c` 剥离成只跑以太网：保留 USART2 printf + 一个心跳指示（GPIO 闪灯）+ MX_LWIP_Init，关掉 FDCAN / QSPI / SDMMC / FATFS 初始化
-4. 检查 MPU 配置覆盖 0x30000000 起的 D2 SRAM 256KB（已有），确认 ETH DMA 描述符落在该区域
-5. 用现有 Makefile 编译，验证无错误
-6. 给出烧录与测试步骤（电脑网卡 IP 设置、ping 命令、失败时的排查清单）
+- [x] 编译通过（75KB，零警告）
+- [x] LAN8720 PHY 地址探测（addr=1，BSR 探测）
+- [x] Tx D-Cache Clean 已加入
+- [ ] ping 192.168.1.88 通（待验证）
+- [ ] FDCAN1 收发
+- [ ] QSPI W25Q128 读 JEDEC ID
+- [ ] SDMMC + FatFs 挂载 TF 卡
