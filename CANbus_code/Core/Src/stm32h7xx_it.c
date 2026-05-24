@@ -20,8 +20,9 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32h7xx_it.h"
-/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,9 +50,20 @@
 
 /* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+extern UART_HandleTypeDef huart2;
 
+static void fault_print(const char *name, uint32_t *sp)
+{
+  char buf[96];
+  /* sp[6] = PC, sp[5] = LR from exception stack frame */
+  sprintf(buf, "\r\n[%s] PC=0x%08lX LR=0x%08lX\r\n"
+               "  CFSR=0x%08lX HFSR=0x%08lX\r\n",
+          name,
+          sp[6], sp[5],
+          SCB->CFSR, SCB->HFSR);
+  HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500);
+}
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -87,13 +99,21 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  __asm volatile (
+    "TST LR, #4 \n"
+    "ITE EQ \n"
+    "MRSEQ R0, MSP \n"
+    "MRSNE R0, PSP \n"
+    "B fault_print_hardfault \n"
+  );
   /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
+  while (1) {}
+}
+
+void fault_print_hardfault(uint32_t *sp)
+{
+  fault_print("HARDFAULT", sp);
+  while (1) {}
 }
 
 /**
@@ -102,13 +122,21 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+  __asm volatile (
+    "TST LR, #4 \n"
+    "ITE EQ \n"
+    "MRSEQ R0, MSP \n"
+    "MRSNE R0, PSP \n"
+    "B fault_print_memmanage \n"
+  );
   /* USER CODE END MemoryManagement_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
-    /* USER CODE END W1_MemoryManagement_IRQn 0 */
-  }
+  while (1) {}
+}
+
+void fault_print_memmanage(uint32_t *sp)
+{
+  fault_print("MEMMANAGE", sp);
+  while (1) {}
 }
 
 /**
@@ -117,13 +145,21 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  __asm volatile (
+    "TST LR, #4 \n"
+    "ITE EQ \n"
+    "MRSEQ R0, MSP \n"
+    "MRSNE R0, PSP \n"
+    "B fault_print_busfault \n"
+  );
   /* USER CODE END BusFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_BusFault_IRQn 0 */
-    /* USER CODE END W1_BusFault_IRQn 0 */
-  }
+  while (1) {}
+}
+
+void fault_print_busfault(uint32_t *sp)
+{
+  fault_print("BUSFAULT", sp);
+  while (1) {}
 }
 
 /**
@@ -132,13 +168,21 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  __asm volatile (
+    "TST LR, #4 \n"
+    "ITE EQ \n"
+    "MRSEQ R0, MSP \n"
+    "MRSNE R0, PSP \n"
+    "B fault_print_usagefault \n"
+  );
   /* USER CODE END UsageFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
-    /* USER CODE END W1_UsageFault_IRQn 0 */
-  }
+  while (1) {}
+}
+
+void fault_print_usagefault(uint32_t *sp)
+{
+  fault_print("USAGEFAULT", sp);
+  while (1) {}
 }
 
 /**
