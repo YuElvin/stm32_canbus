@@ -2,11 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> 最后更新：2026-05-25 | 项目阶段：阶段 1
+
 ---
 
 ## 项目定位
 
-STM32H750VBT6 CAN/CAN-FD 数据采集解析网关。当前处于**阶段 1（以太网验证）**，部分外设初始化已注释掉。最终目标：CAN 收发 + DBC 解析 + 规则控制继电器 + 以太网 Web 配置界面。详细需求见 `PROJECT_REQUIREMENTS.md`，调试历史见 `DEBUG_LOG.md`。
+STM32H750VBT6 CAN/CAN-FD 数据采集解析网关，当前处于**阶段 1（以太网验证）**。详细需求见 `PROJECT_REQUIREMENTS.md`，调试历史见 `DEBUG_LOG.md`，工程概览见 `README.md`。
 
 ---
 
@@ -28,28 +30,6 @@ rm -f build/foo.o && "$MAKE"   # 强制重编单个文件
 PowerShell 的 make 找不到 sh.exe，会失败。编译输出在 `CANbus_code/build/`。
 
 **当前 Flash 占用**：约 76KB / 128KB（`-Og` 调试优化）。
-
----
-
-## 工程结构
-
-```
-CANbus_code/
-├── CANbus_code.ioc              # CubeMX 配置（引脚/时钟/外设，不要手动改引脚代码）
-├── STM32H750XX_FLASH.ld         # 链接脚本（手动添加了 .lwip_sec 段）
-├── Core/Src/
-│   ├── main.c                   # 外设初始化顺序 + MPU 配置 + vAssertCalled + Error_Handler
-│   ├── freertos.c               # FreeRTOS 任务：defaultTask（LwIP init）+ heartbeatTask
-│   ├── stm32h7xx_it.c           # 中断向量（含 HardFault/MemManage/BusFault/UsageFault 诊断打印）
-│   └── gpio.c / usart.c / fdcan.c / quadspi.c / sdmmc.c
-├── LWIP/
-│   ├── App/lwip.c               # IP 配置（192.168.1.88）、netif 注册、EthLink 任务
-│   └── Target/
-│       ├── ethernetif.c         # ETH DMA 接口（含大量手动修改，见下文）
-│       └── lwipopts.h           # LwIP 关键参数
-├── FATFS/                       # FatFs（当前未 init）
-└── Drivers/BSP/Components/lan8742/  # PHY 驱动（用于 LAN8720，寄存器兼容）
-```
 
 ---
 
@@ -147,7 +127,7 @@ MX_USART2_UART_Init();
 
 ---
 
-## 引脚分配摘要
+## 引脚分配（详见 `PROJECT_REQUIREMENTS.md`）
 
 ```
 ETH RMII    : PA1/PA2/PA7/PC1/PC4/PC5/PB11/PB12/PB13
@@ -161,18 +141,16 @@ SWD         : PA13 / PA14
 
 ---
 
-## 当前验证状态
+## 验证状态（阶段 1）
 
 - [x] 编译通过（76KB，零警告）
-- [x] LAN8720 PHY 地址探测（addr=1，BSR 探测）
-- [x] Tx D-Cache Clean（地址对齐修正）
-- [x] ETH_PAD_SIZE=2（ARP 非对齐 HardFault 修复）
+- [x] LAN8720 PHY 地址探测（addr=1，BSR）
+- [x] MPU/Cache 配置修正（D2 SRAM Normal Non-Cacheable）
+- [x] SMEMCPY 逐字节拷贝（非对齐安全）
 - [x] FreeRTOS 堆 32KB + MEM_SIZE 16KB
 - [x] heartbeatTask 独立心跳
-- [ ] ping 192.168.1.88 通（待验证 commit `15dcadf`）
-- [ ] FDCAN1 收发
-- [ ] QSPI W25Q128 读 JEDEC ID
-- [ ] SDMMC + FatFs 挂载 TF 卡
+- [ ] ping 192.168.1.88 通（待上板验证）
+- [ ] 后续阶段：FDCAN / QSPI / SDMMC
 
 ---
 

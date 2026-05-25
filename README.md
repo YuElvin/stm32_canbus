@@ -1,5 +1,7 @@
 # STM32H750 CAN/CAN-FD 网关
 
+> 最后更新：2026-05-25 | 项目阶段：阶段 1（以太网验证） | 对应 commit：`bdf031b`
+
 基于 STM32H750VBT6 的 CAN 数据采集解析网关，支持 DBC 信号解析、规则引擎控制继电器、以太网 Web 配置界面，后续可通过 ESP32-C3 扩展 WiFi。
 
 ## 硬件平台
@@ -18,7 +20,7 @@
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| 1 | 以太网验证 — LAN8720 ping 通 | 已完成 |
+| 1 | 以太网验证 — LAN8720 ping 通 | 开发完成，待硬件验证 |
 | 2 | FDCAN1 收发 + DBC 解析 | 待开发 |
 | 3 | QSPI W25Q128 读写 | 待开发 |
 | 4 | SDMMC + FatFs 日志记录 | 待开发 |
@@ -83,11 +85,11 @@ openocd -f interface/stlink.cfg -f target/stm32h7x.cfg \
 │   │       └── lwipopts.h        # LwIP 参数
 │   ├── FATFS/                    # FatFs（阶段 4 启用）
 │   └── Drivers/                  # HAL + BSP + CMSIS
+├── STM32项目沟通.md           # 原始需求沟通记录（Claude 对话存档）
 ├── PROJECT_REQUIREMENTS.md       # 完整硬件需求和引脚分配
 ├── BUILD_AND_TEST.md             # 工具链安装和编译详细指南
 ├── DEBUG_LOG.md                  # 调试历史和问题排查记录
-├── REVIEW_REPORT.md              # 项目审核报告（六维评估）
-├── OPTIMIZATION_PLAN.md          # 分批次优化方案
+├── PROJECT_AUDIT.md              # 项目审核报告 + 优化方案（合并）
 └── CLAUDE.md                     # Claude Code 辅助指令（架构约束）
 ```
 
@@ -100,11 +102,11 @@ openocd -f interface/stlink.cfg -f target/stm32h7x.cfg \
 
 ## 相关文档
 
+- [原始需求记录](STM32项目沟通.md) — 硬件选型、引脚方案、开发路线等完整对话
 - [需求规格](PROJECT_REQUIREMENTS.md) — 硬件清单、引脚分配、功能需求
 - [编译指南](BUILD_AND_TEST.md) — 工具链安装、编译步骤、常见问题
 - [调试日志](DEBUG_LOG.md) — 每个问题的现象、排查过程、根因和修复
-- [审核报告](REVIEW_REPORT.md) — 项目安全性、结构、耦合度等六维审核
-- [优化方案](OPTIMIZATION_PLAN.md) — 分批次落地优化计划
+- [审核与优化方案](PROJECT_AUDIT.md) — 项目审核报告 + 分批次优化计划（合并）
 
 ## 许可证
 

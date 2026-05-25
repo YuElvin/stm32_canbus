@@ -1,8 +1,6 @@
 # STM32H750 CAN 网关 — 编译与测试指南
 
-> 目标：STM32H750 + LAN8720 以太网验证（阶段 1），串口打印 PHY 地址和链路状态
-
----
+> 最后更新：2026-05-24 | 项目阶段：阶段 1 | 对应 commit：`a838c9d`
 
 ## 一、安装工具链（首次需要）
 
@@ -321,8 +319,3 @@ ping 192.168.1.88 -t
 - LAN8720 参考代码：`demo&data/LAN8720/源代码stm32f407zgt6-LAN8720A 网络通信实验/`
 - LwIP 官方文档：https://www.nongnu.org/lwip/2_1_x/index.html
 - STM32H7 ETH 应用笔记：AN5348（ST 官网下载）
-
----
-
-**编写时间**：2026-05-24
-**对应 commit**：`a838c9d` — feat: LAN8720 ping-only 固件适配
