@@ -85,7 +85,7 @@ openocd -f interface/stlink.cfg -f target/stm32h7x.cfg \
 │   │       └── lwipopts.h        # LwIP 参数
 │   ├── FATFS/                    # FatFs（阶段 4 启用）
 │   └── Drivers/                  # HAL + BSP + CMSIS
-├── STM32项目沟通.md           # 原始需求沟通记录（Claude 对话存档）
+├── STM32项目沟通.docx          # 原始需求沟通记录（归档）
 ├── PROJECT_REQUIREMENTS.md       # 完整硬件需求和引脚分配
 ├── BUILD_AND_TEST.md             # 工具链安装和编译详细指南
 ├── DEBUG_LOG.md                  # 调试历史和问题排查记录
@@ -102,7 +102,6 @@ openocd -f interface/stlink.cfg -f target/stm32h7x.cfg \
 
 ## 相关文档
 
-- [原始需求记录](STM32项目沟通.md) — 硬件选型、引脚方案、开发路线等完整对话
 - [需求规格](PROJECT_REQUIREMENTS.md) — 硬件清单、引脚分配、功能需求
 - [编译指南](BUILD_AND_TEST.md) — 工具链安装、编译步骤、常见问题
 - [调试日志](DEBUG_LOG.md) — 每个问题的现象、排查过程、根因和修复
