@@ -1,7 +1,6 @@
-# LAN8720 Ping-Only 固件 — 编译与测试指南
+# STM32H750 CAN 网关 — 编译与测试指南
 
-> 当前 commit: `a838c9d` — feat: LAN8720 ping-only 固件适配
-> 目标：验证 STM32H750 + LAN8720 能 ping 通，串口打印 PHY 地址和链路状态
+> 目标：STM32H750 + LAN8720 以太网验证（阶段 1），串口打印 PHY 地址和链路状态
 
 ---
 

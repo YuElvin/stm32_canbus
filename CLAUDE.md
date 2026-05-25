@@ -55,16 +55,20 @@ CANbus_code/
 
 ## 关键架构约束
 
-### 1. STM32H7 D-Cache 规则（违反会导致以太网静默失败或 HardFault）
+### 1. STM32H7 D-Cache 与 MPU 配置
 
-| 操作 | 位置 | 要求 |
-|---|---|---|
-| 发送（Tx） | `low_level_output()` pbuf 遍历循环内 | `SCB_CleanDCache_by_Addr`，**地址必须向下对齐到 32 字节** |
-| 接收（Rx） | `HAL_ETH_RxLinkCallback()` | 已有 `SCB_InvalidateDCache_by_Addr`，不要删 |
-| DMA 描述符 | `.lwip_sec` 段 | 强制放在 0x30000000（D2 SRAM，MPU Non-Cacheable） |
+当前采用 **Non-Cacheable D2 SRAM** 方案，ETH DMA 描述符和 Rx 缓冲池均在 Non-Cacheable 区域，
+**不需要手动 Clean/Invalidate D-Cache**（之前版本曾有，已移除）。
 
-MPU Region 0（0x30000000, 256KB）= Non-Cacheable Bufferable（ETH DMA 用）。  
-MPU Region 1（0x24000000, 512KB）= Cacheable（代码/数据，pbuf payload 在这里）。
+| 区域 | 基地址 | 大小 | MPU 属性 | 用途 |
+|---|---|---|---|---|
+| D2 SRAM | 0x30000000 | 256KB | Non-Cacheable, Bufferable | DMA 描述符 + Rx Pool + LwIP Heap |
+| AXI SRAM | 0x24000000 | 512KB | Cacheable | 代码/数据/pbuf payload |
+
+Tx 路径：`HAL_ETH_Transmit_IT` 零拷贝，pbuf payload 在 Cacheable 区域，DMA 直接读取。
+Rx 路径：Rx Pool 在 Non-Cacheable 区域，接收无需 Cache 维护。
+
+如未来将 Rx Pool 移至 Cacheable 区域，需重新加入 `SCB_InvalidateDCache_by_Addr`。
 
 ### 2. D2 SRAM 内存布局（不能随意改动地址）
 
@@ -81,7 +85,7 @@ MPU Region 1（0x24000000, 512KB）= Cacheable（代码/数据，pbuf payload �
 
 | 参数 | 值 | 原因 |
 |---|---|---|
-| `ETH_PAD_SIZE` | `2` | 以太网帧头 14 字节，不加 padding 时 ARP/IP 结构体字段非 4 字节对齐，Cortex-M7 UNALIGN_TRP 触发 HardFault |
+| `ETH_PAD_SIZE` | `0`（不设置） | 已通过覆写 `SMEMCPY` 为逐字节拷贝解决非对齐访问问题（见 `lwipopts.h:124-138`）。设置 `ETH_PAD_SIZE=2` 反而导致 LwIP pbuf 对齐计算错误 |
 | `MEM_SIZE` | `16*1024` | LwIP 默认 1600B 不够，pbuf/TCP 缓冲区分配失败触发 assert |
 | `LWIP_RAM_HEAP_POINTER` | `0x30005000` | 必须在 Rx_PoolSection 之后（见上方布局） |
 
@@ -131,8 +135,8 @@ MX_USART2_UART_Init();
 | 文件 | 修改内容 |
 |---|---|
 | `STM32H750XX_FLASH.ld` | 末尾加了 `.lwip_sec` 段（ETH DMA 描述符强制映射到 D2 SRAM） |
-| `LWIP/Target/ethernetif.c` | PHY BSR 探测、1000ms 延时、Tx D-Cache Clean（地址对齐）、EthIf 栈 512 words、串口打印 |
-| `LWIP/Target/lwipopts.h` | `ETH_PAD_SIZE=2`、`MEM_SIZE=16KB`、`LWIP_RAM_HEAP_POINTER=0x30005000` |
+| `LWIP/Target/ethernetif.c` | PHY BSR 探测、1000ms 延时、SMEMCPY 覆写、EthIf 栈 512 words、串口打印 |
+| `LWIP/Target/lwipopts.h` | `SMEMCPY` 覆写为逐字节拷贝、`MEM_SIZE=16KB`、`LWIP_RAM_HEAP_POINTER=0x30005000` |
 | `Core/Src/freertos.c` | defaultTask（LwIP init 后退出）+ heartbeatTask（PE7 心跳） |
 | `Core/Src/main.c` | 注释了 FDCAN/QSPI/SDMMC/FATFS 初始化；加了 vAssertCalled/Error_Handler 打印 |
 | `Core/Src/stm32h7xx_it.c` | Fault handler 改为打印 PC/LR/CFSR |

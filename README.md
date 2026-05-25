@@ -85,24 +85,26 @@ openocd -f interface/stlink.cfg -f target/stm32h7x.cfg \
 │   └── Drivers/                  # HAL + BSP + CMSIS
 ├── PROJECT_REQUIREMENTS.md       # 完整硬件需求和引脚分配
 ├── BUILD_AND_TEST.md             # 工具链安装和编译详细指南
-├── CONFIG_SUMMARY.md             # 时钟树 / MPU / 外设配置详情
 ├── DEBUG_LOG.md                  # 调试历史和问题排查记录
+├── REVIEW_REPORT.md              # 项目审核报告（六维评估）
+├── OPTIMIZATION_PLAN.md          # 分批次优化方案
 └── CLAUDE.md                     # Claude Code 辅助指令（架构约束）
 ```
 
 ## 关键设计决策
 
-- **D-Cache 处理**：ETH DMA 描述符放在 D2 SRAM（MPU Non-Cacheable），Tx 发送前 Clean，Rx 接收后 Invalidate，避免 Cache 一致性问题
-- **ETH_PAD_SIZE=2**：以太网帧头 14 字节非 4 字节对齐，Cortex-M7 UNALIGN_TRP 会触发 HardFault，加 2 字节 padding 保证对齐
-- **FreeRTOS 堆 32KB**：LwIP + ETH 需 4 个任务 + 队列/信号量，默认 15KB 不够
-- **PHY BSR 探测**：LAN8720 无 SMR 寄存器（lan8742.c 的 SMR 扫描不兼容），改用 BSR 探测地址 0/1
+- **D-Cache 处理**：ETH DMA 描述符和 Rx 缓冲池放在 D2 SRAM（MPU Non-Cacheable），不需要手动 Clean/Invalidate D-Cache。见 `lwipopts.h` 注释。
+- **ETH_PAD_SIZE=0**：通过覆写 `SMEMCPY` 为逐字节拷贝解决 Cortex-M7 非对齐访问问题，而非添加以太网帧 padding。见 `lwipopts.h:124-138`。
+- **FreeRTOS 堆 32KB**：LwIP + ETH 需 4 个任务 + 队列/信号量，默认 15KB 不够。
+- **PHY BSR 探测**：LAN8720 无 SMR 寄存器（lan8742.c 的 SMR 扫描不兼容），改用 BSR 探测地址 0/1。
 
 ## 相关文档
 
 - [需求规格](PROJECT_REQUIREMENTS.md) — 硬件清单、引脚分配、功能需求
 - [编译指南](BUILD_AND_TEST.md) — 工具链安装、编译步骤、常见问题
-- [配置详情](CONFIG_SUMMARY.md) — 时钟树、MPU、LwIP、FreeRTOS 完整配置
 - [调试日志](DEBUG_LOG.md) — 每个问题的现象、排查过程、根因和修复
+- [审核报告](REVIEW_REPORT.md) — 项目安全性、结构、耦合度等六维审核
+- [优化方案](OPTIMIZATION_PLAN.md) — 分批次落地优化计划
 
 ## 许可证
 
