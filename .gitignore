@@ -26,6 +26,8 @@ CANbus_code_backup_*/
 Thumbs.db
 .DS_Store
 desktop.ini
+*.lnk
+*.docx
 
 # CubeMX 临时
 .metadata/
