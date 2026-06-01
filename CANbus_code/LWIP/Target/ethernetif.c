@@ -472,20 +472,24 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   tx_config.pData = p;
 
   /* USER CODE BEGIN TX_DIAG */
-  /* Print first 14 bytes of every 10th TX packet (destMAC + srcMAC + ethertype)
-     to verify ARP reply content. Use modulo to avoid flooding UART. */
+  /* Print TX packet info for diagnostics.
+     Always print ARP (type=0806), print others every 10th. */
   {
     static uint32_t tx_diag_cnt = 0;
-    if ((tx_diag_cnt++ % 10) == 0 && p->len >= 14)
+    uint8_t *d = (uint8_t *)p->payload;
+    uint8_t is_arp = (p->len >= 14 && d[12] == 0x08 && d[13] == 0x06);
+    if (is_arp || (tx_diag_cnt++ % 10) == 0)
     {
-      uint8_t *d = (uint8_t *)p->payload;
-      char tmsg[80];
-      sprintf(tmsg, "[TX] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X type=%02X%02X len=%lu\r\n",
-              d[6], d[7], d[8], d[9], d[10], d[11],
-              d[0], d[1], d[2], d[3], d[4], d[5],
-              d[12], d[13],
-              (unsigned long)p->tot_len);
-      HAL_UART_Transmit(&huart2, (uint8_t*)tmsg, strlen(tmsg), 100);
+      if (p->len >= 14)
+      {
+        char tmsg[80];
+        sprintf(tmsg, "[TX] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X type=%02X%02X len=%lu\r\n",
+                d[6], d[7], d[8], d[9], d[10], d[11],
+                d[0], d[1], d[2], d[3], d[4], d[5],
+                d[12], d[13],
+                (unsigned long)p->tot_len);
+        HAL_UART_Transmit(&huart2, (uint8_t*)tmsg, strlen(tmsg), 100);
+      }
     }
   }
   /* USER CODE END TX_DIAG */
@@ -501,8 +505,12 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
     }
     else
     {
+      uint32_t eth_err = HAL_ETH_GetError(&heth);
+      char emsg[64];
+      sprintf(emsg, "[TX] ERR=%lu gS=%lu\r\n", eth_err, (uint32_t)heth.gState);
+      HAL_UART_Transmit(&huart2, (uint8_t*)emsg, strlen(emsg), 100);
 
-      if(HAL_ETH_GetError(&heth) & HAL_ETH_ERROR_BUSY)
+      if(eth_err & HAL_ETH_ERROR_BUSY)
       {
         /* Wait for descriptors to become available */
         osSemaphoreAcquire(TxPktSemaphore, ETHIF_TX_TIMEOUT);
@@ -580,8 +588,12 @@ void ethernetif_input(void* argument)
         p = low_level_input( netif );
         if (p != NULL)
         {
-          if (netif->input( p, netif) != ERR_OK )
+          err_t inp_err = netif->input( p, netif);
+          if ( inp_err != ERR_OK )
           {
+            char emsg[48];
+            sprintf(emsg, "[ETH] input err=%d len=%u\r\n", inp_err, p->len);
+            HAL_UART_Transmit(&huart2, (uint8_t*)emsg, strlen(emsg), 100);
             pbuf_free(p);
           }
         }
