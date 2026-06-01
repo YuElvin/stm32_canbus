@@ -289,19 +289,25 @@ static void low_level_init(struct netif *netif)
 
 /* USER CODE BEGIN PHY_PRE_CONFIG */
   /* LAN8720 does not have LAN8742's SMR register, so auto-scan fails.
-     Probe address 0 and 1 by reading BSR (reg 1) — a valid PHY returns 0x7809 or similar (not 0x0000/0xFFFF). */
+     Probe all 32 addresses by reading BSR (reg 1) — a valid PHY returns
+     a non-zero, non-0xFFFF value. Also retry several times with delays
+     because the PHY may need extra time after cold boot. */
   {
     uint32_t bsr = 0;
     uint32_t lan8720_addr = 0xFFFFFFFF;
-    uint32_t probe;
-    for (probe = 0; probe <= 1; probe++)
+    uint32_t probe, attempt;
+    for (attempt = 0; attempt < 5 && lan8720_addr == 0xFFFFFFFF; attempt++)
     {
-      if (ETH_PHY_IO_ReadReg(probe, 0x01 /* BSR */, &bsr) == 0)
+      if (attempt > 0) HAL_Delay(500);  /* wait 500ms between retries */
+      for (probe = 0; probe <= 31; probe++)
       {
-        if (bsr != 0x0000 && bsr != 0xFFFF)
+        if (ETH_PHY_IO_ReadReg(probe, 0x01 /* BSR */, &bsr) == 0)
         {
-          lan8720_addr = probe;
-          break;
+          if (bsr != 0x0000 && bsr != 0xFFFF)
+          {
+            lan8720_addr = probe;
+            break;
+          }
         }
       }
     }
@@ -835,8 +841,9 @@ int32_t ETH_PHY_IO_Init(void)
   HAL_ETH_SetMDIOClockRange(&heth);
 
   /* LAN8720 requires power-on stabilization time before MDIO is accessible.
-     Module has no reset pin, so we must wait after power-on. */
-  HAL_Delay(1000);
+     Module has no reset pin, so we must wait after power-on.
+     2000ms ensures reliable MDIO on cold boot. */
+  HAL_Delay(2000);
 
   return 0;
 }
