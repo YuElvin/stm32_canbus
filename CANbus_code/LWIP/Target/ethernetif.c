@@ -246,6 +246,17 @@ static void low_level_init(struct netif *netif)
 
   /* End ETH HAL Init */
 
+  /* CRITICAL: HAL_ETH_Init resets TX descriptors but does NOT clear
+     TxDescList.PacketAddress[]. If a packet was queued before init
+     (e.g. LwIP's initial ARP request), PacketAddress[0] is non-NULL
+     and all subsequent HAL_ETH_Transmit_IT() calls return BUSY. */
+  {
+    uint32_t i;
+    for (i = 0; i < ETH_TX_DESC_CNT; i++) {
+      heth.TxDescList.PacketAddress[i] = NULL;
+    }
+  }
+
   /* Initialize the RX POOL */
   LWIP_MEMPOOL_INIT(RX_POOL);
 
