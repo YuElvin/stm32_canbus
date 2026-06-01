@@ -439,6 +439,17 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   ETH_BufferTypeDef Txbuffer[ETH_TX_DESC_CNT] = {0};
   ETH_TxPacketConfig tx_config;
 
+  /* One-time diagnostic: confirm low_level_output is called */
+  {
+    static uint8_t llo_cnt = 0;
+    if (llo_cnt < 5) {
+      char xm[24];
+      llo_cnt++;
+      sprintf(xm, "[LLO#%d] len=%lu\r\n", llo_cnt, (unsigned long)p->tot_len);
+      HAL_UART_Transmit(&huart2, (uint8_t*)xm, strlen(xm), 50);
+    }
+  }
+
   memset(Txbuffer, 0 , ETH_TX_DESC_CNT*sizeof(ETH_BufferTypeDef));
 
   /* Set Tx packet config common parameters */
@@ -777,7 +788,7 @@ void HAL_ETH_MspInit(ETH_HandleTypeDef* ethHandle)
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
     /* Peripheral interrupt init */
-    HAL_NVIC_SetPriority(ETH_IRQn, 5, 0);
+    HAL_NVIC_SetPriority(ETH_IRQn, 6, 0);
     HAL_NVIC_EnableIRQ(ETH_IRQn);
   /* USER CODE BEGIN ETH_MspInit 1 */
 
