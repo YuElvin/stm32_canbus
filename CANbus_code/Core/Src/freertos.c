@@ -147,6 +147,18 @@ void StartHeartbeatTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+#include <stdio.h>
+#include <string.h>
+extern UART_HandleTypeDef huart2;
 
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+  char buf[64];
+  (void)xTask;
+  taskDISABLE_INTERRUPTS();
+  sprintf(buf, "\r\n[STACK_OVF] Task: %s\r\n", pcTaskName);
+  HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 200);
+  for (;;) {}
+}
 /* USER CODE END Application */
 
