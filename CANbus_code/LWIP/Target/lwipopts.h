@@ -59,7 +59,8 @@
    frame and causing all incoming ARP requests to be silently dropped (no reply).
    The original UNALIGNED HardFault that ETH_PAD_SIZE was meant to fix is now
    solved by the SMEMCPY override below (byte-by-byte copy). */
-/* Rx_PoolSection ends at 0x30004A83 (12 * RxBuff_t ~18.3KB from 0x30000100).
+/* Rx_PoolSection starts at 0x30000180 (after 8 Rx + 4 Tx descriptors).
+   12 * RxBuff_t ~18.9KB, pool ends ~0x30004B90.
    Heap must start AFTER the pool. 0x30005000 gives safe margin.
    MEM_SIZE: LwIP internal heap for pbuf/TCP buffers (in D2 SRAM, non-cacheable). */
 #define LWIP_RAM_HEAP_POINTER 0x30005000

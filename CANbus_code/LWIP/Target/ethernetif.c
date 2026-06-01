@@ -340,9 +340,13 @@ static void low_level_init(struct netif *netif)
     HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
     /* USER CODE END PHY_LINK_CHECK */
 
-    /* Get link state */
+    /* Configure MAC speed/duplex based on current PHY state.
+       If link is down, use 100M FD as default — will be updated by
+       ethernet_link_thread when link comes up. */
     if(PHYLinkState <= LAN8742_STATUS_LINK_DOWN)
     {
+      duplex = ETH_FULLDUPLEX_MODE;
+      speed = ETH_SPEED_100M;
       netif_set_link_down(netif);
       netif_set_down(netif);
     }
@@ -371,19 +375,26 @@ static void low_level_init(struct netif *netif)
         speed = ETH_SPEED_100M;
         break;
       }
+      netif_set_up(netif);
+      netif_set_link_up(netif);
+    }
 
-    /* Get MAC Config MAC */
+    /* Get MAC Config and apply speed/duplex */
     HAL_ETH_GetMACConfig(&heth, &MACConf);
     MACConf.DuplexMode = duplex;
     MACConf.Speed = speed;
     HAL_ETH_SetMACConfig(&heth, &MACConf);
 
-    HAL_ETH_Start_IT(&heth);
-    netif_set_up(netif);
-    netif_set_link_up(netif);
-/* USER CODE BEGIN PHY_POST_CONFIG */
-
-/* USER CODE END PHY_POST_CONFIG */
+    /* ALWAYS start ETH DMA — even if link is down. The DMA will sit idle
+       until the PHY establishes link, then packets will flow.
+       Previously this was skipped when link was down, which meant
+       HAL_ETH_Start_IT() was never called and the DMA never started. */
+    {
+      HAL_StatusTypeDef start_ret = HAL_ETH_Start_IT(&heth);
+      sprintf(msg, "[ETH] Start_IT: %s (gState=%lu)\r\n",
+              (start_ret == HAL_OK) ? "OK" : "FAIL",
+              (uint32_t)heth.gState);
+      HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
     }
 
   }
@@ -460,6 +471,25 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   tx_config.TxBuffer = Txbuffer;
   tx_config.pData = p;
 
+  /* USER CODE BEGIN TX_DIAG */
+  /* Print first 14 bytes of every 10th TX packet (destMAC + srcMAC + ethertype)
+     to verify ARP reply content. Use modulo to avoid flooding UART. */
+  {
+    static uint32_t tx_diag_cnt = 0;
+    if ((tx_diag_cnt++ % 10) == 0 && p->len >= 14)
+    {
+      uint8_t *d = (uint8_t *)p->payload;
+      char tmsg[80];
+      sprintf(tmsg, "[TX] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X type=%02X%02X len=%lu\r\n",
+              d[6], d[7], d[8], d[9], d[10], d[11],
+              d[0], d[1], d[2], d[3], d[4], d[5],
+              d[12], d[13],
+              (unsigned long)p->tot_len);
+      HAL_UART_Transmit(&huart2, (uint8_t*)tmsg, strlen(tmsg), 100);
+    }
+  }
+  /* USER CODE END TX_DIAG */
+
   pbuf_ref(p);
 
   do
@@ -506,7 +536,22 @@ static struct pbuf * low_level_input(struct netif *netif)
   if(RxAllocStatus == RX_ALLOC_OK)
   {
     HAL_ETH_ReadData(&heth, (void **)&p);
-    if (p != NULL) eth_rx_count++;
+    if (p != NULL)
+    {
+      eth_rx_count++;
+      /* Print first 14 bytes of first few RX packets for diagnostics */
+      if (eth_rx_count <= 3 && p->len >= 14)
+      {
+        uint8_t *d = (uint8_t *)p->payload;
+        char rmsg[96];
+        sprintf(rmsg, "[RX#%lu] %02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X type=%02X%02X\r\n",
+                eth_rx_count,
+                d[6], d[7], d[8], d[9], d[10], d[11],
+                d[0], d[1], d[2], d[3], d[4], d[5],
+                d[12], d[13]);
+        HAL_UART_Transmit(&huart2, (uint8_t*)rmsg, strlen(rmsg), 100);
+      }
+    }
   }
 
   return p;
@@ -878,9 +923,11 @@ void ethernet_link_thread(void* argument)
     }
     if (HAL_GetTick() - print_tick >= 2000) {
       print_tick = HAL_GetTick();
-      sprintf(dbg, "[ETH] stat rx=%lu tx=%lu raw=%ld stable=%ld up=%d\r\n",
-              eth_rx_count, eth_tx_count, PHYLinkState, debounced_link,
-              netif_is_link_up(netif));
+      sprintf(dbg, "[ETH] stat rx=%lu tx=%lu err=%lu raw=%ld stable=%ld up=%d gS=%lu\r\n",
+              eth_rx_count, eth_tx_count, eth_rx_err_count,
+              PHYLinkState, debounced_link,
+              netif_is_link_up(netif),
+              (uint32_t)heth.gState);
       HAL_UART_Transmit(&huart2, (uint8_t*)dbg, strlen(dbg), 100);
     }
   }
