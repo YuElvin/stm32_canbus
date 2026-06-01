@@ -313,45 +313,134 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 | `2bf8479` | PHY 链路去抖动 + 永不 Stop_IT（#16） |
 | `8019de8` | **移除 `ETH_PAD_SIZE`**（#15 修复，让接收链路恢复） |
 | `bdf031b` | ⭐ **MPU TEX/C/B 编码修正：B=1→B=0**（#18，所有 fault 的根本原因） |
+| `2c5de94` | ETH DMA 永远启动 + 诊断打印 + RX 描述符 4→8 |
+| `4bc2703` | ARP 回复链路排查诊断（tcpip_input 返回值、TX 错误码） |
+| `2cea3e0` | EthIf 栈 512→1024 words + 启用栈溢出检测 |
+| `2e318f0` | PHY BSR 探测全地址扫描 + 重试 + 延时 2000ms |
+| `65b2934` | EthIf 栈→2048 words + 栈溢出钩子打印任务名 |
+| `9c8742d` | EthLink 栈 1024→2048 words |
+| `50c0f0d` | ETH 中断优先级 5→6 + LLO 诊断 |
+| `a556216` | HAL_ETH_Init 后清除 PacketAddress[] |
+| `86b5c07` | LLO 打印 payload 前 6 字节确认以太网头 |
 
 ---
 
-## 八、当前状态与下一步
+## 八、第二轮调试（commit `2c5de94` ~ `86b5c07`）
 
-**当前状态**：等待烧录 commit `bdf031b` 验证 ping 通
+> 第一轮修复了 MPU/Cache/DMA 等底层问题后，进入实际 ping 测试阶段。
 
-**预期串口输出**：
-```
-[ETH] LAN8720 addr=1, link=probed-OK
-[ETH] PHY link state: 1 或 6（上电时未协商完）
-[ETH] raw link: ... -> 2  ← 协商完成
-[ETH] LINK UP confirmed: speed=16384 duplex=8192
-[ETH] stat rx=N tx=N raw=2 stable=2 up=1
-```
+### 问题 20：冷启动 PHY BSR 探测失败（addr=31）
 
-**预期行为**：
-- 无任何 `[HARDFAULT]` 输出
-- PE7 持续 1Hz 闪烁
-- ping 期间 rx 和 tx 同步增长
+**现象**：上电后 `[ETH] LAN8720 addr=31, link=scan-fallback`，链路停留在 10M 半双工。
 
-**预期 Ping 结果**：
-```powershell
-ping 192.168.1.88 -S 192.168.1.100
-# 来自 192.168.1.88 的回复: 字节=32 时间<1ms TTL=255
-```
+**原因**：LAN8720 模块无 RESET 引脚，冷启动时 MDIO 响应慢。BSR 探测只扫地址 0 和 1，均返回 0x0000，回落到 SMR 扫描得到错误地址 31。
 
-**Ping 通后下一步（按 CLAUDE.md 路线）**：
-- 阶段 2：恢复 FDCAN1 初始化，验证 CAN 收发
-- 阶段 3：恢复 QSPI，读 W25Q128 JEDEC ID
-- 阶段 4：恢复 SDMMC + FatFs，挂载 TF 卡
-- 阶段 5：以太网 + CAN 联调，Web 显示原始 CAN 帧
+**修复**：BSR 探测扩展到 0-31 全地址 + 5 次重试（每次间隔 500ms）+ MDIO 延时 1000→2000ms。
 
 ---
 
-## 九、本轮调试的总反思
+### 问题 21：EthIf 任务栈溢出（queue.c:1586 断言）
+
+**现象**：收到 ARP 请求后触发 `[ASSERT] queue.c:1586`。
+
+**原因**：EthIf 任务栈 512 words（2048B），加上 sprintf 诊断代码（rmsg[96]）和 HAL_ETH_ReadData 调用链，栈溢出破坏了 FreeRTOS 队列结构。
+
+**修复**：INTERFACE_THREAD_STACK_SIZE 512→2048 words。
+
+---
+
+### 问题 22：EthLink 任务栈溢出（cmsis_os2.c:2924 断言）
+
+**现象**：`[STACK_OVF] Task: EthLink`。
+
+**原因**：ethernet_link_thread 栈 1024 words（4096B），内有 char dbg[112] + char m[80] + sprintf，总用量超过 4096B。
+
+**修复**：lwip.c 中 INTERFACE_THREAD_STACK_SIZE 1024→2048 words。
+
+---
+
+### 问题 23：ETH 中断优先级边界问题（queue.c:894 断言）
+
+**现象**：ping 操作后触发 `[ASSERT] queue.c:894`（`pvItemToQueue == NULL`）。
+
+**原因**：ETH_IRQn 优先级 = 5，等于 `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`（5）。在某些 FreeRTOS port 中，等于临界值的中断调用 `osSemaphoreRelease` 会触发断言。
+
+**修复**：HAL_NVIC_SetPriority(ETH_IRQn, 5→6, 0)。
+
+---
+
+### 问题 24：HAL_ETH_Init 未清除 PacketAddress（ARP 回复发送失败）
+
+**现象**：ARP 请求收到（rx>0），但 ARP 回复不发送（tx=1 只有初始 ARP）。
+
+**原因**：LwIP 初始化时 `etharp_request()` 调用 `HAL_ETH_Transmit_IT()` 设置了 `PacketAddress[0]=非空`。随后 `HAL_ETH_Init()` 重置 TX 描述符但**不清除 PacketAddress[]**。后续 ARP 回复调用 `HAL_ETH_Transmit_IT()` 时 `PacketAddress[0]!=NULL` → 误判描述符忙 → 返回失败。
+
+**修复**：`HAL_ETH_Init()` 后手动 `memset(heth.TxDescList.PacketAddress, 0, ...)`。
+
+---
+
+### 问题 25：ARP 回复目标 MAC 异常（待解决）
+
+**现象**：`[LLO#2]` 确认 `low_level_output()` 被调用，但 `[TX]` 显示目标 MAC 为广播 `FF:FF:FF:FF:FF:FF` 而非 PC 的 `00:E2:69:7D:EC:40`。
+
+**分析**：ARP 回复应由 `etharp_raw()` 通过 `ethernet_output()` 发送，目标 MAC 应为 PC 的 MAC。广播目标说明：
+1. 发送的不是 ARP 回复，而是 LwIP 重试的 ARP 请求
+2. 或 `etharp_input()` 未被 tcpip_thread 处理
+
+**状态**：待进一步诊断（LLO 已增加 payload 前 6 字节打印）。
+
+---
+
+### 问题 26：PHY 链路持续抖动
+
+**现象**：`[ETH] raw link: 2 -> 5 -> 2 -> 5` 持续循环（100M FD ↔ 10M HD）。
+
+**原因**：LAN8720 模块的自动协商不稳定，可能原因：
+- 网线质量差或接触不良
+- 模块 50MHz 晶振不稳定
+- 对端设备协商行为异常
+
+**影响**：debounce 机制（500ms 稳定才采纳）使 debounced_link 保持在 2（100M FD），不影响功能。但频繁的 raw link 变化打印会淹没其他诊断输出。
+
+---
+
+## 九、当前状态与下一步
+
+**当前状态**：ARP 回复发送问题待解决（问题 25）
+
+**已完成**：
+- [x] PHY BSR 探测冷启动修复
+- [x] 栈溢出修复（EthIf 2048w + EthLink 2048w）
+- [x] 栈溢出钩子诊断
+- [x] ETH 中断优先级 5→6
+- [x] PacketAddress 清除
+- [x] RX 描述符 4→8
+- [x] ETH DMA 永远启动
+
+**待解决**：
+- [ ] ARP 回复目标 MAC 异常（问题 25）
+- [ ] queue.c:894 断言（可能与问题 25 相关）
+- [ ] PHY 链路抖动（硬件层面问题）
+
+**下一步**：
+1. 分析 LLO 诊断输出，确认发送的是否为 ARP 回复
+2. 如果是 ARP 请求（非回复），检查 tcpip_thread 是否正常处理 ARP
+3. 考虑绕过 tcpip_thread，直接在 EthIf 任务中处理 ARP
+
+---
+
+## 十、调试经验总结
 
 1. **CubeMX 默认配置不能信** —— MPU、LwIP heap 指针、PHY 选型都有错
 2. **修一个问题不要急于下结论** —— `ETH_PAD_SIZE=2` 看似修了 ARP HardFault，实际只是改变了崩溃位置；真正根本原因是 MPU 编码
 3. **现象相似的 fault 可能源自同一原因** —— ARP/IP/cache 维护三类崩溃看似无关，根本都是 MPU `B` 位写错
 4. **诊断代码的价值远超修复代码** —— 没有 fault handler 的 PC 打印、没有 rx/tx 计数器、没有链路抖动打印，根本不可能定位到 #16、#18 这种深层问题
 5. **从硬件 ARM 规范文档查表是最可靠的** —— ARMv7-M ARM Table B3-13（TEX/C/B 编码）一查就发现 CubeMX 给的是 Implementation-defined 编码
+
+### 第二轮调试经验
+
+6. **栈溢出是 FreeRTOS 最常见的崩溃原因** —— 表现为随机的 queue.c assert 或 cmsis_os2.c assert，根本原因是栈写坏了 TCB 或队列结构。`configCHECK_FOR_STACK_OVERFLOW=2` + 自定义 `vApplicationStackOverflowHook` 是必备诊断
+7. **FreeRTOS 中断优先级边界问题** —— `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5` 时，优先级 5 的中断调用 FreeRTOS API 可能在某些 port 上触发断言。保险起见用 6 或更大值
+8. **HAL_ETH_Init 不清除 PacketAddress** —— CubeMX HAL 的 `ETH_DMATxDescListInit()` 只重置描述符，不清 `TxDescList.PacketAddress[]`。如果初始化前有包被 `HAL_ETH_Transmit_IT()` 排队，PacketAddress 残留会导致后续所有发送返回 BUSY
+9. **LAN8720 冷启动 MDIO 稳定时间长** —— 某些模块需要 2-3 秒 MDIO 才稳定，仅扫地址 0/1 不够，需要全地址扫描 + 重试
+10. **诊断代码会增加栈消耗** —— 每个 `sprintf` + 局部缓冲区消耗 100-200B 栈。加诊断后必须同步增大任务栈，否则诊断本身就导致溢出
