@@ -638,6 +638,12 @@ etharp_get_entry(size_t i, ip4_addr_t **ipaddr, struct netif **netif, struct eth
  *
  * @see pbuf_free()
  */
+/* Diagnostic counters: trace etharp_input decision path */
+volatile uint32_t etharp_reply_ok    = 0;  /* sent ARP reply */
+volatile uint32_t etharp_not_for_us  = 0;  /* ARP request not for our IP */
+volatile uint32_t etharp_unconfig    = 0;  /* netif IP not configured */
+volatile uint32_t etharp_bad_hdr     = 0;  /* header type/length mismatch */
+
 void
 etharp_input(struct pbuf *p, struct netif *netif)
 {
@@ -662,6 +668,7 @@ etharp_input(struct pbuf *p, struct netif *netif)
                  hdr->hwtype, (u16_t)hdr->hwlen, hdr->proto, (u16_t)hdr->protolen));
     ETHARP_STATS_INC(etharp.proterr);
     ETHARP_STATS_INC(etharp.drop);
+    etharp_bad_hdr++;
     pbuf_free(p);
     return;
   }
@@ -714,6 +721,7 @@ etharp_input(struct pbuf *p, struct netif *netif)
       /* ARP request for our address? */
       if (for_us && !from_us) {
         /* send ARP response */
+        etharp_reply_ok++;
         etharp_raw(netif,
                    (struct eth_addr *)netif->hwaddr, &hdr->shwaddr,
                    (struct eth_addr *)netif->hwaddr, netif_ip4_addr(netif),
@@ -722,10 +730,12 @@ etharp_input(struct pbuf *p, struct netif *netif)
         /* we are not configured? */
       } else if (ip4_addr_isany_val(*netif_ip4_addr(netif))) {
         /* { for_us == 0 and netif->ip_addr.addr == 0 } */
+        etharp_unconfig++;
         LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("etharp_input: we are unconfigured, ARP request ignored.\n"));
         /* request was not directed to us */
       } else {
         /* { for_us == 0 and netif->ip_addr.addr != 0 } */
+        etharp_not_for_us++;
         LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("etharp_input: ARP request was not for us.\n"));
       }
       break;
