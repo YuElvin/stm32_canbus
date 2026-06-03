@@ -1,6 +1,6 @@
 # 调试日志 — STM32H750 + LAN8720 以太网 Ping 验证
 
-> 最后更新：2026-05-24 | 项目阶段：阶段 1 | 覆盖 commit `7e8ebc3` ~ `bdf031b`
+> 最后更新：2026-06-03 | 项目阶段：阶段 1 | 覆盖 commit `7e8ebc3` ~ `96be154`
 
 ## 一、目标
 
@@ -322,6 +322,9 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 | `50c0f0d` | ETH 中断优先级 5→6 + LLO 诊断 |
 | `a556216` | HAL_ETH_Init 后清除 PacketAddress[] |
 | `86b5c07` | LLO 打印 payload 前 6 字节确认以太网头 |
+| `31154a0` | tcpip_thread 邮箱管道诊断计数器（q/P/L） |
+| `5cf5d8c` | etharp_input 决策路径计数器（reply_ok/not_for_us/uc/bh） |
+| `96be154` | etharp_input 打印 ARP tgt IP vs netif IP 对比（前 8 包） |
 
 ---
 
@@ -379,36 +382,72 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 
 ---
 
-### 问题 25：ARP 回复目标 MAC 异常（待解决）
+### 问题 25：ARP 回复目标 MAC 为广播（已解决 — Windows ARP 缓存）
 
 **现象**：`[LLO#2]` 确认 `low_level_output()` 被调用，但 `[TX]` 显示目标 MAC 为广播 `FF:FF:FF:FF:FF:FF` 而非 PC 的 `00:E2:69:7D:EC:40`。
 
-**分析**：ARP 回复应由 `etharp_raw()` 通过 `ethernet_output()` 发送，目标 MAC 应为 PC 的 MAC。广播目标说明：
-1. 发送的不是 ARP 回复，而是 LwIP 重试的 ARP 请求
-2. 或 `etharp_input()` 未被 tcpip_thread 处理
+**诊断过程**：
 
-**状态**：待进一步诊断（LLO 已增加 payload 前 6 字节打印）。
+1. **tcpip_thread 邮箱管道诊断**（commit `31154a0`）：在 `tcpip.c` 增加三个计数器 `tcpip_inpkt_queued`/`_lost`/`_proc`。结果 `q=20/20 L=0`，管道完全正常，排除 tcpip_thread 阻塞。
+
+2. **etharp 决策路径诊断**（commit `5cf5d8c`）：增加 `etharp_reply_ok`/`_not_for_us`/`_unconfig`/`_bad_hdr` 四个计数器。结果 `ARP ok=0 no=5 uc=0 bh=0` — etharp 判定所有 ARP 请求都不是发给本机的。
+
+3. **IP 地址对比诊断**（commit `96be154`）：打印 `tgt=X.X.X.X nif=X.X.X.X f_us=X`。发现 PC 发出的 ARP 目标是 `192.168.1.100`（ACD 冲突检测），**从未发出对 `192.168.1.88` 的 ARP 请求**。
+
+**根本原因**：Windows ARP 缓存。之前 flash 烧录 boot 时 PC 缓存了 `.88`→STM32 MAC 的映射。Reset 后 PC 拿着过期条目直接发 IP 包（不带 ARP 请求），收不到回复。ACD 探测（`tgt=192.168.1.100`）不会触发 STM32 回复。
+
+**验证**：PC 执行 `arp -d 192.168.1.88` 清除缓存后再 ping，正常：
+```
+[ARP#1] tgt=192.168.1.88 nif=192.168.1.88 f_us=1 from=0  ← 正确匹配
+[LLO#2] hdr=00:E2:69:7D:EC:40                              ← ARP Reply 单播
+[TX] 00:80:E1:00:00:00 -> 00:E2:69:7D:EC:40 type=0806      ← 发送成功
+ARP ok=1 no=0 uc=0 bh=0
+```
+Ping 4 包全通（最短 2ms，最长 38ms）。
+
+**修复**：无需代码更改。开发调试时每次 Reset 后先 `arp -d 192.168.1.88`。
 
 ---
 
 ### 问题 26：PHY 链路持续抖动
 
-**现象**：`[ETH] raw link: 2 -> 5 -> 2 -> 5` 持续循环（100M FD ↔ 10M HD）。
+**现象**：`[ETH] raw link: 2 -> 5 -> 1 -> 6` 持续循环（100M FD ↔ 10M HD ↔ LINK_DOWN ↔ 自动协商）。
 
-**原因**：LAN8720 模块的自动协商不稳定，可能原因：
-- 网线质量差或接触不良
-- 模块 50MHz 晶振不稳定
-- 对端设备协商行为异常
+**原因**：LAN8720 模块 / 网线 / RMII 接线硬件层面问题，MDIO 寄存器值频繁跳变。
 
-**影响**：debounce 机制（500ms 稳定才采纳）使 debounced_link 保持在 2（100M FD），不影响功能。但频繁的 raw link 变化打印会淹没其他诊断输出。
+**排查方向**：
+1. 换网线（最可能）
+2. 示波器检查 PA1 REF_CLK（50MHz 晶振）
+3. 检查 9 根 RMII 杜邦线接触
+
+**影响**：debounce 机制（500ms 稳定才采纳）使 `debounced_link` 保持 2（100M FD），不影响功能。raw link 变化只有打印，不再触发 Stop_IT/Start_IT。频繁打印会淹没其他输出。
+
+---
+
+### 问题 27：`netif_set_up` 在 `HAL_ETH_Start_IT` 之前触发 LwIP ARP
+
+**现象**：`[LLO#1]` 调用时 `gState=16`（BUSY_TX），DMA 未启动，首包 ARP 丢失。`HAL_ETH_Start_IT` 之后才被调用。
+
+**原因**：`low_level_init()` 中 `netif_set_up(netif)`（`ethernetif.c:395`）触发 LwIP 立即发 ARP，但 `HAL_ETH_Start_IT()` 在 `ethernetif.c:410` 之后才执行。
+
+**状态**：低优先。LwIP 会 ARP 重试，第二次 ARP 正常发出。Reset 后首次 ping 可能多等 200ms。
+
+---
+
+### 问题 28：`TX ERR=2` 偶发
+
+**现象**：ping 通道正常但偶尔出现 `[TX] ERR=2 gS=64`（HAL_ETH_ERROR_BUSY），随后自动恢复。
+
+**状态**：暂不影响功能。如果后续频繁出现再排查。
 
 ---
 
 ## 九、当前状态与下一步
 
-**当前状态**：ARP 回复发送问题待解决（问题 25）
+**当前状态**：Ping 验证通过（Reset 后 `arp -d` 清除 PC 缓存即可正常 ping 通）
 
 **已完成**：
+- [x] Ping 通：ARP 请求/回复/ICMP Echo 全链路验证通过
 - [x] PHY BSR 探测冷启动修复
 - [x] 栈溢出修复（EthIf 2048w + EthLink 2048w）
 - [x] 栈溢出钩子诊断
@@ -416,16 +455,16 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 - [x] PacketAddress 清除
 - [x] RX 描述符 4→8
 - [x] ETH DMA 永远启动
+- [x] tcpip_thread 邮箱管道诊断（q/P/L 计数器）
+- [x] etharp 决策路径诊断（reply_ok/not_for_us/uc/bh 计数器）
+- [x] etharp IP 地址对比诊断
 
-**待解决**：
-- [ ] ARP 回复目标 MAC 异常（问题 25）
-- [ ] queue.c:894 断言（可能与问题 25 相关）
-- [ ] PHY 链路抖动（硬件层面问题）
+**已知残留问题**：
+- [ ] PHY 链路抖动（硬件层面，debounce 已防御）
+- [ ] `netif_set_up` 在 `Start_IT` 之前（首包 ARP 丢失，LwIP 重试解决）
+- [ ] `TX ERR=2` 偶发（自动恢复）
 
-**下一步**：
-1. 分析 LLO 诊断输出，确认发送的是否为 ARP 回复
-2. 如果是 ARP 请求（非回复），检查 tcpip_thread 是否正常处理 ARP
-3. 考虑绕过 tcpip_thread，直接在 EthIf 任务中处理 ARP
+**下一步**：进入阶段 2（FDCAN 数据采集）
 
 ---
 
@@ -444,3 +483,44 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 8. **HAL_ETH_Init 不清除 PacketAddress** —— CubeMX HAL 的 `ETH_DMATxDescListInit()` 只重置描述符，不清 `TxDescList.PacketAddress[]`。如果初始化前有包被 `HAL_ETH_Transmit_IT()` 排队，PacketAddress 残留会导致后续所有发送返回 BUSY
 9. **LAN8720 冷启动 MDIO 稳定时间长** —— 某些模块需要 2-3 秒 MDIO 才稳定，仅扫地址 0/1 不够，需要全地址扫描 + 重试
 10. **诊断代码会增加栈消耗** —— 每个 `sprintf` + 局部缓冲区消耗 100-200B 栈。加诊断后必须同步增大任务栈，否则诊断本身就导致溢出
+
+---
+
+## 十一、第三轮调试（commit `31154a0` ~ `96be154`）
+
+> 第二轮的诊断代码已确认 tcpip_thread 管道和 etharp 都正常工作，但 ping 仍不通。
+> 引入分层诊断逐级定位：tcpip 邮箱 → etharp 决策 → IP 地址对比。
+
+### 诊断方法
+
+采用三级分层诊断，从上到下收敛问题范围：
+
+| 层级 | 文件 | 计数器 | 作用 |
+|---|---|---|---|
+| L1 | `tcpip.c` | `queued` / `lost` / `proc` | 确认包从 EthIf 到达 tcpip_thread 且被消费 |
+| L2 | `etharp.c` | `reply_ok` / `not_for_us` / `uc` / `bh` | 确认 etharp_input 判断结果 |
+| L3 | `etharp.c` | ARP tgt IP vs netif IP 直接打印 | 对比两个 IP 的具体值 |
+
+### 定位结果
+
+```
+tcpip:  q=20/20 L=0        ← L1 完全正常（收到20包，处理20包，0丢失）
+etharp: ARP ok=0 no=5      ← L2 ARP 请求不是发给本机的
+ARP IP: tgt=192.168.1.100 nif=192.168.1.88  ← L3 PC 没在ping .88，而是在做ACD探测
+```
+
+**根因**：PC 侧 Windows ARP 缓存。开发调试每次 Reset 后需 `arp -d 192.168.1.88`。
+
+### 验证
+
+```bash
+arp -d 192.168.1.88
+ping 192.168.1.88 -S 192.168.1.100
+# 4/4 包通，RTT 最小 2ms
+```
+
+### 第三轮调试经验
+
+11. **ARP 不通先检查 PC 侧缓存** —— Windows ARP 表在硬件地址变化后不会自动更新。Reset 后 MCU MAC 重新初始化（虽然不变，但 PC 可能因 DHCP/APIPA 等过程把条目标记为 stale）
+12. **分层诊断比一次性加满打印更高效** —— 先确认管道，再确认协议层，最后对比数值。每层收敛范围后下一层更有针对性
+13. **诊断计数器优于实时打印** —— volatile 计数器不阻塞、不会溢出、不会被淹没。只在周期性 stat 行中汇总打印，零性能影响
