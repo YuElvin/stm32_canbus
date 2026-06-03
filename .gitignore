@@ -33,3 +33,6 @@ desktop.ini
 .metadata/
 RemoteSystemsTempFiles/
 demo&data/
+
+# 串口日志
+serial_data/
