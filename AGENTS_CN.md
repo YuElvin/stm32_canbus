@@ -15,6 +15,7 @@ make -j8
 - 全量编译：`rm -r -Force build/; make`（Windows 下 `make clean` 不可靠）
 - 输出：`CANbus_code/build/`（`.bin` `.hex` `.elf`）
 - Flash 占用：约 99KB / 128KB（`-Og`），接近上限——见下方 Flash 章节
+- **每次编译成功后**：`git add -A; git commit -m "..." ; git push`
 
 ## Flash 128KB 限制 — 关键
 
@@ -49,14 +50,26 @@ ETH DMA 描述符和 LwIP 堆通过链接脚本中的 `.lwip_sec` 段固定在�
 
 ```
 MX_GPIO_Init();
-// MX_FDCAN1_Init();    ← 已禁用，待阶段 5 恢复
-MX_QUADSPI_Init();      // W25Q128
-// MX_SDMMC1_SD_Init(); ← 禁止调用：FatFs 的 BSP_SD_Init 内部处理
+// MX_FDCAN1_Init();       ← 已禁用，待阶段 5 恢复
+MX_QUADSPI_Init();         // W25Q128
+// MX_SDMMC1_SD_Init();    ← 禁止调用：FatFs 的 BSP_SD_Init 内部处理
 MX_USART2_UART_Init();
-MX_FATFS_Init();        // 内部触发 BSP_SD_Init
+MX_FATFS_Init();           // 注册 SD_Driver（不初始化卡）
+SD_Detect_GPIO_Init();     // PA8 卡检测引脚（输入 + 上拉）
+// → QSPI_Verify + SD_Verify 在 initTestTask（freertos.c）调度器启动后执行
 ```
 
-**SDMMC 陷阱**：同时调用 `MX_SDMMC1_SD_Init()` + `f_mount()` 会导致 `HAL_SD_Init()` 被调用两次 → FR_NOT_READY。SD 初始化应完全交给 FatFs 管理。
+### SDMMC 陷阱 — 五条关键规则
+
+1. **禁止调用 `MX_SDMMC1_SD_Init()`** —— FatFs 的 `SD_initialize()` 在 `f_mount()` 内部调用 `BSP_SD_Init()`。双重 `HAL_SD_Init()` 导致 `FR_NOT_READY`。
+
+2. **所有 FatFs/SD 操作必须在 FreeRTOS 任务中执行**（`osKernelStart()` 之后）。`sd_diskio.c:SD_initialize()` 检查 `osKernelGetState() == osKernelRunning`，内核未运行时跳过初始化。在 `main()` 中、调度器启动前调用 `f_mount()`/`SD_Verify()` 将静默失败，输出 `FR_NOT_READY, state=0 error=0`。
+
+3. **STM32H7 HAL `SD_ERROR_UNSUPPORTED_FEATURE`（0x80000000）** —— `HAL_SD_Init()` 可能返回此错误但卡实际已就绪（`State=HAL_SD_STATE_READY`）。本仓库的 `BSP_SD_Init()` 会检查 `State` 并清除错误码。不要删除此容错逻辑。
+
+4. **4 位总线 → 1 位降级** —— `HAL_SD_ConfigWideBusOperation(4B)` 在某些硬件上可能报 `CMD_CRC_FAIL`（0x01）。`BSP_SD_Init()` 会自动降级为 1 位模式。诊断信息打印到 USART2。
+
+5. **PA8 卡检测已绕过** —— `BSP_SD_IsDetected()` 当前硬编码返回 `SD_PRESENT`。PA8 极性和连接尚未用万用表确认。确认前不要恢复 PA8 检测逻辑。
 
 ## QSPI W25Q128 — 避免使用 AutoPolling
 
@@ -71,22 +84,24 @@ CubeMX 选了 `lan8742.c` 但硬件是 LAN8720。关键差异：
 
 ## FreeRTOS 栈大小
 
-所有网络任务栈必须 ≥ 2048 words（8KB）。深调用链 `ip4_input → etharp_query → etharp_request` 在 1024 words 时会栈溢出。任务列表：
+所有网络任务栈必须 ≥ 2048 words（8KB）。深调用链 `ip4_input → etharp_query → etharp_request` 在 1024 words 时会栈溢出。
 
-| 任务 | 栈大小 | 优先级 |
-|---|---|---|
-| defaultTask | 2048 | Normal（LwIP 初始化后退出） |
-| tcpip_thread | 2048 | —（LwIP 内部） |
-| EthIf | 2048 | —（LwIP 内部） |
-| EthLink | 2048 | —（LwIP 内部） |
-| heartbeatTask | 128 | Low |
+| 任务 | 栈大小 | 优先级 | 说明 |
+|---|---|---|---|
+| defaultTask | 2048 | Normal | LwIP 初始化后退出 |
+| initTestTask | 1024 | Normal | QSPI + SD 验证后退出 |
+| tcpip_thread | 2048 | — | LwIP 内部 |
+| EthIf | 2048 | — | LwIP 内部 |
+| EthLink | 2048 | — | LwIP 内部 |
+| heartbeatTask | 128 | Low | PE10 1Hz 心跳 |
 
 ## 引脚分配速查
 
 ```
 ETH RMII    : PA1/PA2/PA7/PC1/PC4/PC5/PB11/PB12/PB13
 QSPI W25Q128: PB2/PB10/PD11/PD12/PE2/PD13
-SDMMC1 TF卡 : PC8-PC12/PD2
+SDMMC1 TF卡 : PC8(D0) PC9(D1) PC10(D2) PC11(D3) PC12(CK) PD2(CMD)
+SD 卡检测   : PA8（输入 + 上拉，代码中已绕过 — 见 SDMMC 陷阱）
 FDCAN1      : PD0(RX) PD1(TX)
 继电器      : PE7(Relay1) PE8(Relay2) — 高电平触发，上电默认低
 调试LED     : PE10(DBG_LED1) PE11(DBG_LED2) — 高电平点亮
@@ -101,9 +116,18 @@ USART2      : PD5(TX) PD6(RX) — 115200 8N1
 arm-none-eabi-addr2line -e build/CANbus_code.elf -f -C <PC十六进制地址>
 ```
 
+## 串口调试输出 — SD 错误码
+
+`[SD] HAL SD state=X error=Y` — 常见值：
+| state | 含义 | error | 含义 |
+|---|---|---|---|
+| 0 | RESET（HAL_SD_Init 从未调用） | 0 | 无错误 |
+| 1 | READY（卡初始化成功） | 0x01 | CMD_CRC_FAIL |
+| | | 0x80000000 | UNSUPPORTED_FEATURE（可恢复） |
+
 ## 相关文档
 
 - `CLAUDE.md` — 完整架构约束、CubeMX 覆盖文件列表、LwIP/MPU/Cache 细节
 - `PROJECT_REQUIREMENTS.md` — 硬件规格、引脚分配、阶段路线图
-- `DEBUG_LOG.md` — 每个 bug 的现象→排查→根因→修复，编号经验 #1-#23
+- `DEBUG_LOG.md` — 每个 bug 的现象→排查→根因→修复，编号经验 #1-#27
 - `BUILD_AND_TEST.md` — 工具链安装、接线指南、分步验证
