@@ -57,6 +57,7 @@
 #include "netif/ethernet.h"
 
 #include <string.h>
+#include <stdio.h>
 
 #ifdef LWIP_HOOK_FILENAME
 #include LWIP_HOOK_FILENAME
@@ -644,6 +645,9 @@ volatile uint32_t etharp_not_for_us  = 0;  /* ARP request not for our IP */
 volatile uint32_t etharp_unconfig    = 0;  /* netif IP not configured */
 volatile uint32_t etharp_bad_hdr     = 0;  /* header type/length mismatch */
 
+#include "usart.h"
+extern UART_HandleTypeDef huart2;
+
 void
 etharp_input(struct pbuf *p, struct netif *netif)
 {
@@ -699,6 +703,23 @@ etharp_input(struct pbuf *p, struct netif *netif)
     for_us = (u8_t)ip4_addr_eq(&dipaddr, netif_ip4_addr(netif));
     /* ARP packet from us? */
     from_us = (u8_t)ip4_addr_eq(&sipaddr, netif_ip4_addr(netif));
+  }
+
+  /* Diagnostic: print target IP vs netif IP for first few packets */
+  {
+    static uint32_t arp_diag = 0;
+    if (arp_diag < 8) {
+      char ab[80];
+      const ip4_addr_t *nif_ip = netif_ip4_addr(netif);
+      uint8_t *dp = (uint8_t *)&dipaddr;
+      uint8_t *np = (uint8_t *)nif_ip;
+      arp_diag++;
+      sprintf(ab, "[ARP#%lu] tgt=%u.%u.%u.%u nif=%u.%u.%u.%u f_us=%d from=%d\r\n",
+              arp_diag, dp[0], dp[1], dp[2], dp[3],
+              np[0], np[1], np[2], np[3],
+              (int)for_us, (int)from_us);
+      HAL_UART_Transmit(&huart2, (uint8_t *)ab, strlen(ab), 100);
+    }
   }
 
   /* ARP message directed to us?
