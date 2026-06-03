@@ -1,6 +1,6 @@
 # 调试日志 — STM32H750 + LAN8720 以太网 Ping 验证
 
-> 最后更新：2026-06-03 | 项目阶段：阶段 3（QSPI 已通过）| 覆盖 commit `7e8ebc3` ~ `e31b734`
+> 最后更新：2026-06-03 | 项目阶段：阶段 4（SDMMC 已通过）| 覆盖 commit `7e8ebc3` ~ `3584e4c`
 
 ## 一、目标
 
@@ -679,3 +679,96 @@ static HAL_StatusTypeDef W25QXX_WaitBusy(uint32_t timeout_ms)
 17. **HAL_QSPI_AutoPolling 对状态机有隐式依赖** —— 在 STM32H7 上，前一次 Command/Receive 操作完成后外设状态可能未完全清理，直接接 AutoPolling 会冲突。手动轮询 SR1 更可靠
 18. **JEDEC ID 读取是最简单的 QSPI 验证** —— 只需 Instruction + Receive，不涉及 WriteEnable/BUSY/地址，适合第一步验证 QSPI 硬件连接和时钟配置是否正确
 19. **测试地址选最后扇区（0xFF0000）** —— 避免覆盖可能存在的配置数据，验证后自动擦除清理
+
+---
+
+## 十三、阶段 4 — SDMMC + FatFs TF 卡验证（commit `3eff125` ~ `3584e4c`）
+
+> 目标：验证 SDMMC1 4 位模式 + FatFs 挂载 TF 卡、写文件、读回校验。
+
+### 硬件
+
+| 部件 | 说明 |
+|---|---|
+| TF 卡座 | 板载，SDMMC1 4 位模式 |
+| 引脚 | PC8(D0) PC9(D1) PC10(D2) PC11(D3) PC12(CK) PD2(CMD) |
+| SDMMC 时钟 | PLL2 输出，ClockDiv=0（HAL 初始化时自动降到 400kHz 识别，再提速） |
+
+### 问题 1：Flash 溢出 142KB（cc936.c）
+
+**现象**：启用 FatFs 后链接报 `.rodata` 溢出 FLASH region 142500 字节。
+
+**根因**：CubeMX 默认 `_CODE_PAGE=936`（简体中文 GBK），对应 `cc936.c` 包含 ~170KB 的 Unicode-OEM 双向转换表，远超 128KB Flash 容量。
+
+**修复**：`_CODE_PAGE` 改为 437（U.S. English），`cc936.c` 替换为 `ccsbcs.c`（单字节代码页合集，仅几 KB）。
+
+| 文件 | 改动 |
+|---|---|
+| `FATFS/Target/ffconf.h` | `_CODE_PAGE` 936→437 |
+| `Makefile` | `cc936.c` → `ccsbcs.c` |
+
+**限制**：代码页 437 仅支持 ASCII 文件名，不支持中文。后续需要中文文件名时需切回 936 并配合 `-Os` 或 W25Q128 XIP 方案。
+
+**结果**：编译通过，Flash 占用 99KB / 128KB。
+
+### 问题 2：f_mount error 3（FR_NOT_READY）— 重复初始化
+
+**现象**：SD 卡硬件识别正常（`HAL_SD_GetCardInfo` 返回 type=1, BlockNbr=30560256），但 `f_mount()` 返回 3（FR_NOT_READY）。
+
+**串口输出**：
+```
+[SD] Card detect: PRESENT
+[SD] Card type=1 BlockNbr=30560256 BlockSize=512
+[SD] FAIL: f_mount error 3
+[SD] HAL SD state=1 error=0
+```
+
+**根因**：`main.c` 中先调了 `MX_SDMMC1_SD_Init()` → `HAL_SD_Init()` 完成 SD 卡初始化，之后 `f_mount()` 内部的 `SD_initialize()` 又调 `BSP_SD_Init()` → `HAL_SD_Init()` 重复初始化。HAL 状态机在第二次初始化时冲突，`BSP_SD_GetCardState()` 返回非 `SD_TRANSFER_OK` → `Stat = STA_NOINIT` → FatFs 报 FR_NOT_READY。
+
+**修复**：注释掉 `main.c` 中的 `MX_SDMMC1_SD_Init()`，让 FatFs 的 `SD_initialize()` 通过 `BSP_SD_Init()` 统一负责 SDMMC GPIO/时钟/卡初始化。
+
+**结果**：`f_mount` 返回 FR_OK。
+
+### 问题 3：HAL_SD_GetCardInfo 返回全零 — 调用顺序错误
+
+**现象**：移除 `MX_SDMMC1_SD_Init()` 后，`HAL_SD_GetCardInfo()` 在 `f_mount()` 之前调用返回全零（type=0, BlockNbr=0）。
+
+**串口输出**：
+```
+[SD] Card type=0 BlockNbr=0 BlockSize=0
+[SD] FAIL: f_mount error 3
+[SD] HAL SD state=0 error=0
+```
+
+**根因**：`HAL_SD_GetCardInfo()` 需要 SD 卡已初始化（`HAL_SD_STATE_READY`）。移除 `MX_SDMMC1_SD_Init()` 后，SD 卡在 `f_mount()` → `BSP_SD_Init()` 之前处于 `HAL_SD_STATE_RESET` 状态。
+
+**修复**：将 `HAL_SD_GetCardInfo()` 移到 `f_mount()` 成功之后调用。
+
+**结果**：卡信息正确返回。
+
+### 验证结果（通过）
+
+```
+[SD] TF Card Verify Start
+[SD] Mount OK
+[SD] Card type=1 BlockNbr=30560256 BlockSize=512
+[SD] Card: 14902 MB total, 14800 MB free
+[SD] Write OK (34 bytes)
+[SD] Read verify OK
+[SD] TF Card Verify Done
+```
+
+| 步骤 | 结果 |
+|---|---|
+| f_mount | FR_OK |
+| f_getfree | 14.6GB 总容量，~14.4GB 可用 |
+| f_open + f_write | 34 字节写入成功 |
+| f_read + strcmp | 数据完全匹配 |
+| f_unlink | 测试文件清理成功 |
+
+### 经验总结
+
+20. **FatFs 与 CubeMX 外设初始化不要重复** —— FatFs 的 `SD_initialize()` 会调 `BSP_SD_Init()` 完成完整初始化（包括 HAL_MspInit GPIO/时钟配置）。main.c 中再调 `MX_SDMMC1_SD_Init()` 会导致 `HAL_SD_Init()` 被调两次，HAL 状态机冲突。正确做法是只保留 FatFs 的初始化路径
+21. **FatFs API 调用顺序依赖初始化** —— `HAL_SD_GetCardInfo()` 等 HAL API 需要 SD 卡处于 `READY` 状态，必须在 `f_mount()`（触发 `BSP_SD_Init()`）之后调用
+22. **cc936.c（中文代码页）是 Flash 杀手** —— 170KB 转换表远超 128KB Flash。验证阶段用代码页 437（几 KB）足够，中文文件名支持需要 XIP 或 `-Os` 优化方案
+23. **SD 卡验证测试文件名用纯 ASCII** —— 代码页 437 不支持中文，测试文件名和内容都用 ASCII 避免编码问题
