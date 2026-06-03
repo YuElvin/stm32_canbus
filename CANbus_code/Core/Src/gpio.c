@@ -66,5 +66,13 @@ void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 2 */
-
+void SD_Detect_GPIO_Init(void)
+{
+  GPIO_InitTypeDef gpio_init = {0};
+  /* TF card detect pin PA8: input with pull-up, LOW when card inserted */
+  gpio_init.Pin = GPIO_PIN_8;
+  gpio_init.Mode = GPIO_MODE_INPUT;
+  gpio_init.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOA, &gpio_init);
+}
 /* USER CODE END 2 */

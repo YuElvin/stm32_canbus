@@ -117,8 +117,9 @@ int main(void)
   MX_USART2_UART_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
-  W25QXX_Verify();
-  SD_Verify();
+  SD_Detect_GPIO_Init();
+  /* SD_Verify() must run after FreeRTOS scheduler starts (sd_diskio uses
+     RTOS message queue for DMA completion). Moved to a task in freertos.c. */
   /* USER CODE END 2 */
 
   /* Init scheduler */

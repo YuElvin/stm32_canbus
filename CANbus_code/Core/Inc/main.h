@@ -64,6 +64,9 @@ void Error_Handler(void);
 #define DBG_LED1_GPIO_Port      GPIOE
 #define DBG_LED2_Pin            GPIO_PIN_11
 #define DBG_LED2_GPIO_Port      GPIOE
+/* TF card detect pin (PA8, input with pull-up, LOW = card inserted) */
+#define SD_DETECT_Pin           GPIO_PIN_8
+#define SD_DETECT_GPIO_Port     GPIOA
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

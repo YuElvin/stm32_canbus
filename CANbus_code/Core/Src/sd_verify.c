@@ -35,7 +35,7 @@ uint8_t SD_Verify(void)
     sprintf(buf, "[SD] FAIL: f_mount error %d\r\n", fr);
     sd_print(buf);
     sprintf(buf, "[SD] HAL SD state=%lu error=%lu\r\n",
-            hsd1.State, hsd1.ErrorCode);
+            (unsigned long)hsd1.State, (unsigned long)hsd1.ErrorCode);
     sd_print(buf);
     return 0;
   }

@@ -36,7 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define INIT_TEST_STACK_SIZE (1024 * 4)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -46,7 +46,12 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+osThreadId_t initTestTaskHandle;
+const osThreadAttr_t initTestTask_attributes = {
+  .name = "initTest",
+  .stack_size = INIT_TEST_STACK_SIZE,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -66,7 +71,7 @@ const osThreadAttr_t heartbeatTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+void StartInitTestTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -107,6 +112,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
   heartbeatTaskHandle = osThreadNew(StartHeartbeatTask, NULL, &heartbeatTask_attributes);
+  initTestTaskHandle = osThreadNew(StartInitTestTask, NULL, &initTestTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -149,7 +155,21 @@ void StartHeartbeatTask(void *argument)
 /* USER CODE BEGIN Application */
 #include <stdio.h>
 #include <string.h>
+#include "w25qxx.h"
+#include "sd_verify.h"
+
 extern UART_HandleTypeDef huart2;
+
+void StartInitTestTask(void *argument)
+{
+  (void)argument;
+
+  W25QXX_Verify();
+
+  SD_Verify();
+
+  osThreadExit();
+}
 
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {

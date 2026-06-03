@@ -24,6 +24,7 @@
 
 /* USER CODE BEGIN FirstSection */
 /* can be used to modify / undefine following code or add new definitions */
+#include "main.h"
 /* USER CODE END FirstSection */
 /* Includes ------------------------------------------------------------------*/
 #include "bsp_driver_sd.h"
@@ -295,7 +296,11 @@ __weak uint8_t BSP_SD_IsDetected(void)
   __IO uint8_t status = SD_PRESENT;
 
   /* USER CODE BEGIN IsDetectedSection */
-  /* user code can be inserted here */
+  /* PA8: input with pull-up. LOW = card inserted, HIGH = no card */
+  if (HAL_GPIO_ReadPin(SD_DETECT_GPIO_Port, SD_DETECT_Pin) != GPIO_PIN_RESET)
+  {
+    status = SD_NOT_PRESENT;
+  }
   /* USER CODE END IsDetectedSection */
 
   return status;
