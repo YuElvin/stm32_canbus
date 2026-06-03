@@ -57,7 +57,6 @@
 #include "netif/ethernet.h"
 
 #include <string.h>
-#include <stdio.h>
 
 #ifdef LWIP_HOOK_FILENAME
 #include LWIP_HOOK_FILENAME
@@ -639,15 +638,6 @@ etharp_get_entry(size_t i, ip4_addr_t **ipaddr, struct netif **netif, struct eth
  *
  * @see pbuf_free()
  */
-/* Diagnostic counters: trace etharp_input decision path */
-volatile uint32_t etharp_reply_ok    = 0;  /* sent ARP reply */
-volatile uint32_t etharp_not_for_us  = 0;  /* ARP request not for our IP */
-volatile uint32_t etharp_unconfig    = 0;  /* netif IP not configured */
-volatile uint32_t etharp_bad_hdr     = 0;  /* header type/length mismatch */
-
-#include "usart.h"
-extern UART_HandleTypeDef huart2;
-
 void
 etharp_input(struct pbuf *p, struct netif *netif)
 {
@@ -672,7 +662,6 @@ etharp_input(struct pbuf *p, struct netif *netif)
                  hdr->hwtype, (u16_t)hdr->hwlen, hdr->proto, (u16_t)hdr->protolen));
     ETHARP_STATS_INC(etharp.proterr);
     ETHARP_STATS_INC(etharp.drop);
-    etharp_bad_hdr++;
     pbuf_free(p);
     return;
   }
@@ -705,23 +694,6 @@ etharp_input(struct pbuf *p, struct netif *netif)
     from_us = (u8_t)ip4_addr_eq(&sipaddr, netif_ip4_addr(netif));
   }
 
-  /* Diagnostic: print target IP vs netif IP for first few packets */
-  {
-    static uint32_t arp_diag = 0;
-    if (arp_diag < 8) {
-      char ab[80];
-      const ip4_addr_t *nif_ip = netif_ip4_addr(netif);
-      uint8_t *dp = (uint8_t *)&dipaddr;
-      uint8_t *np = (uint8_t *)nif_ip;
-      arp_diag++;
-      sprintf(ab, "[ARP#%lu] tgt=%u.%u.%u.%u nif=%u.%u.%u.%u f_us=%d from=%d\r\n",
-              arp_diag, dp[0], dp[1], dp[2], dp[3],
-              np[0], np[1], np[2], np[3],
-              (int)for_us, (int)from_us);
-      HAL_UART_Transmit(&huart2, (uint8_t *)ab, strlen(ab), 100);
-    }
-  }
-
   /* ARP message directed to us?
       -> add IP address in ARP cache; assume requester wants to talk to us,
          can result in directly sending the queued packets for this host.
@@ -742,7 +714,6 @@ etharp_input(struct pbuf *p, struct netif *netif)
       /* ARP request for our address? */
       if (for_us && !from_us) {
         /* send ARP response */
-        etharp_reply_ok++;
         etharp_raw(netif,
                    (struct eth_addr *)netif->hwaddr, &hdr->shwaddr,
                    (struct eth_addr *)netif->hwaddr, netif_ip4_addr(netif),
@@ -751,12 +722,10 @@ etharp_input(struct pbuf *p, struct netif *netif)
         /* we are not configured? */
       } else if (ip4_addr_isany_val(*netif_ip4_addr(netif))) {
         /* { for_us == 0 and netif->ip_addr.addr == 0 } */
-        etharp_unconfig++;
         LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("etharp_input: we are unconfigured, ARP request ignored.\n"));
         /* request was not directed to us */
       } else {
         /* { for_us == 0 and netif->ip_addr.addr != 0 } */
-        etharp_not_for_us++;
         LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("etharp_input: ARP request was not for us.\n"));
       }
       break;

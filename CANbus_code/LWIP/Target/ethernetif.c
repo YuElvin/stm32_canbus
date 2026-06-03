@@ -41,17 +41,6 @@ extern UART_HandleTypeDef huart2;
 volatile uint32_t eth_rx_count = 0;
 volatile uint32_t eth_tx_count = 0;
 volatile uint32_t eth_rx_err_count = 0;
-
-/* Extern: tcpip_thread mailbox diagnostic counters (defined in tcpip.c) */
-extern volatile uint32_t tcpip_inpkt_queued;
-extern volatile uint32_t tcpip_inpkt_lost;
-extern volatile uint32_t tcpip_inpkt_proc;
-
-/* Extern: etharp_input decision path counters (defined in etharp.c) */
-extern volatile uint32_t etharp_reply_ok;
-extern volatile uint32_t etharp_not_for_us;
-extern volatile uint32_t etharp_unconfig;
-extern volatile uint32_t etharp_bad_hdr;
 /* USER CODE END 0 */
 
 /* Private define ------------------------------------------------------------*/
@@ -644,26 +633,11 @@ void ethernetif_input(void* argument)
           err_t inp_err = netif->input( p, netif);
           if ( inp_err != ERR_OK )
           {
-            char emsg[72];
-            sprintf(emsg, "[ETH] input err=%d len=%u q=%lu/%lu\r\n",
-                    inp_err, p->len,
-                    tcpip_inpkt_queued, tcpip_inpkt_proc);
+            char emsg[48];
+            sprintf(emsg, "[ETH] input err=%d len=%u\r\n",
+                    inp_err, p->len);
             HAL_UART_Transmit(&huart2, (uint8_t*)emsg, strlen(emsg), 100);
             pbuf_free(p);
-          }
-          else
-          {
-            /* First few packets: confirm queued and check tcpip balance */
-            static uint32_t inp_ok_cnt = 0;
-            inp_ok_cnt++;
-            if (inp_ok_cnt <= 4)
-            {
-              char imsg[72];
-              sprintf(imsg, "[ETH] input#%lu OK len=%u q=%lu/%lu\r\n",
-                      inp_ok_cnt, p->len,
-                      tcpip_inpkt_queued, tcpip_inpkt_proc);
-              HAL_UART_Transmit(&huart2, (uint8_t*)imsg, strlen(imsg), 100);
-            }
           }
         }
       } while(p!=NULL);
@@ -997,7 +971,7 @@ void ethernet_link_thread(void* argument)
 
   /* Print link state changes and periodic stats */
   {
-    char dbg[140];
+    char dbg[96];
     if (PHYLinkState != prev_link) {
       sprintf(dbg, "[ETH] raw link: %ld -> %ld\r\n", prev_link, PHYLinkState);
       HAL_UART_Transmit(&huart2, (uint8_t*)dbg, strlen(dbg), 100);
@@ -1005,13 +979,11 @@ void ethernet_link_thread(void* argument)
     }
     if (HAL_GetTick() - print_tick >= 2000) {
       print_tick = HAL_GetTick();
-      sprintf(dbg, "[ETH] stat rx=%lu tx=%lu err=%lu raw=%ld stable=%ld up=%d gS=%lu q=%lu/%lu L=%lu ARP ok=%lu no=%lu uc=%lu bh=%lu\r\n",
+      sprintf(dbg, "[ETH] stat rx=%lu tx=%lu err=%lu raw=%ld stable=%ld up=%d gS=%lu\r\n",
               eth_rx_count, eth_tx_count, eth_rx_err_count,
               PHYLinkState, debounced_link,
               netif_is_link_up(netif),
-              (uint32_t)heth.gState,
-              tcpip_inpkt_queued, tcpip_inpkt_proc, tcpip_inpkt_lost,
-              etharp_reply_ok, etharp_not_for_us, etharp_unconfig, etharp_bad_hdr);
+              (uint32_t)heth.gState);
       HAL_UART_Transmit(&huart2, (uint8_t*)dbg, strlen(dbg), 100);
     }
   }

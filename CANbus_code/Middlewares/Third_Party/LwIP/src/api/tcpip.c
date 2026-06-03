@@ -60,11 +60,6 @@ static tcpip_init_done_fn tcpip_init_done;
 static void *tcpip_init_done_arg;
 static sys_mbox_t tcpip_mbox;
 
-/* Diagnostic counters: track whether tcpip_thread processes input packets */
-volatile uint32_t tcpip_inpkt_queued = 0;
-volatile uint32_t tcpip_inpkt_lost   = 0;
-volatile uint32_t tcpip_inpkt_proc   = 0;
-
 #if LWIP_TCPIP_CORE_LOCKING
 /** The global semaphore to lock the stack. */
 sys_mutex_t lock_tcpip_core;
@@ -190,7 +185,6 @@ tcpip_thread_handle_msg(struct tcpip_msg *msg)
 #if !LWIP_TCPIP_CORE_LOCKING_INPUT
     case TCPIP_MSG_INPKT:
       LWIP_DEBUGF(TCPIP_DEBUG, ("tcpip_thread: PACKET %p\n", (void *)msg));
-      tcpip_inpkt_proc++;
       if (msg->msg.inp.input_fn(msg->msg.inp.p, msg->msg.inp.netif) != ERR_OK) {
         pbuf_free(msg->msg.inp.p);
       }
@@ -273,7 +267,6 @@ tcpip_inpkt(struct pbuf *p, struct netif *inp, netif_input_fn input_fn)
 
   msg = (struct tcpip_msg *)memp_malloc(MEMP_TCPIP_MSG_INPKT);
   if (msg == NULL) {
-    tcpip_inpkt_lost++;
     return ERR_MEM;
   }
 
@@ -283,10 +276,8 @@ tcpip_inpkt(struct pbuf *p, struct netif *inp, netif_input_fn input_fn)
   msg->msg.inp.input_fn = input_fn;
   if (sys_mbox_trypost(&tcpip_mbox, msg) != ERR_OK) {
     memp_free(MEMP_TCPIP_MSG_INPKT, msg);
-    tcpip_inpkt_lost++;
     return ERR_MEM;
   }
-  tcpip_inpkt_queued++;
   return ERR_OK;
 #endif /* LWIP_TCPIP_CORE_LOCKING_INPUT */
 }
