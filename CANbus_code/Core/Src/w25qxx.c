@@ -38,9 +38,6 @@ static HAL_StatusTypeDef W25QXX_WaitBusy(uint32_t timeout_ms)
   cfg.Interval        = 0x10;
   cfg.AutomaticStop   = QSPI_AUTOMATIC_STOP_ENABLE;
 
-  if (HAL_QSPI_Command(&hqspi, &cmd, 100) != HAL_OK)
-    return HAL_ERROR;
-
   return HAL_QSPI_AutoPolling(&hqspi, &cmd, &cfg, timeout_ms);
 }
 
@@ -73,7 +70,10 @@ HAL_StatusTypeDef W25QXX_EraseSector(uint32_t addr)
   QSPI_CommandTypeDef cmd = {0};
 
   if (W25QXX_WriteEnable() != HAL_OK)
+  {
+    qspi_print(" WREN_FAIL");
     return HAL_ERROR;
+  }
 
   cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
   cmd.Instruction       = W25Q_CMD_SECTOR_ERASE;
@@ -84,9 +84,17 @@ HAL_StatusTypeDef W25QXX_EraseSector(uint32_t addr)
   cmd.DummyCycles       = 0;
 
   if (HAL_QSPI_Command(&hqspi, &cmd, 100) != HAL_OK)
+  {
+    qspi_print(" CMD_FAIL");
     return HAL_ERROR;
+  }
 
-  return W25QXX_WaitBusy(4000);
+  if (W25QXX_WaitBusy(4000) != HAL_OK)
+  {
+    qspi_print(" BUSY_FAIL");
+    return HAL_ERROR;
+  }
+  return HAL_OK;
 }
 
 HAL_StatusTypeDef W25QXX_Write(uint32_t addr, const uint8_t *data, uint32_t len)
