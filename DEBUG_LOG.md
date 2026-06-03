@@ -1,6 +1,6 @@
 # 调试日志 — STM32H750 + LAN8720 以太网 Ping 验证
 
-> 最后更新：2026-06-03 | 项目阶段：阶段 4（SDMMC 已通过）| 覆盖 commit `7e8ebc3` ~ `3584e4c`
+> 最后更新：2026-06-04 | 项目阶段：阶段 4（SDMMC 调试中）| 覆盖 commit `7e8ebc3` ~ `b48adec`
 
 ## 一、目标
 
@@ -772,3 +772,76 @@ static HAL_StatusTypeDef W25QXX_WaitBusy(uint32_t timeout_ms)
 21. **FatFs API 调用顺序依赖初始化** —— `HAL_SD_GetCardInfo()` 等 HAL API 需要 SD 卡处于 `READY` 状态，必须在 `f_mount()`（触发 `BSP_SD_Init()`）之后调用
 22. **cc936.c（中文代码页）是 Flash 杀手** —— 170KB 转换表远超 128KB Flash。验证阶段用代码页 437（几 KB）足够，中文文件名支持需要 XIP 或 `-Os` 优化方案
 23. **SD 卡验证测试文件名用纯 ASCII** —— 代码页 437 不支持中文，测试文件名和内容都用 ASCII 避免编码问题
+
+---
+
+## 十四、阶段 4 续 — SDMMC 调试第二轮（commit `59551ac` ~ `b48adec`）
+
+> 目标：修复 SD 验证在实际硬件上的挂载失败问题，加入物理卡检测。
+
+### 问题 24：SD_Verify() 在 FreeRTOS 调度器启动前调用 → FR_NOT_READY
+
+**现象**：串口 `[SD] FAIL: f_mount error 3`，`HAL SD state=0`（HAL_SD_STATE_RESET）。
+
+**根因**：`main.c` 中 `SD_Verify()` 在 `osKernelStart()` 之前调用。`sd_diskio.c` 的 `SD_initialize()` 有守卫 `osKernelGetState() == osKernelRunning`，内核未运行时跳过 `BSP_SD_Init()` 和 RTOS 消息队列创建，返回 `STA_NOINIT` → FatFs 报 FR_NOT_READY。
+
+对比 QSPI 测试（`W25QXX_Verify()`）可以正常工作的原因：它直接调 HAL API，不依赖 RTOS。
+
+**修复**（`59551ac`）：
+- `main.c`：移除 `W25QXX_Verify()` / `SD_Verify()` 直接调用
+- `freertos.c`：新增 `initTestTask`（Normal 优先级，4KB 栈），在调度器启动后执行两个验证函数
+- `sd_verify.c`：修复 `printf %lu` 格式警告，加 `(unsigned long)` 转换
+
+---
+
+### 问题 25：PA8 卡检测总是读 HIGH，无法检测插卡
+
+**现象**：PA8 配置为输入+内部上拉，预期卡插入时短接到 GND 读 LOW。但无论是否插卡，PA8 始终读 HIGH → `BSP_SD_IsDetected()` 返回 `SD_NOT_PRESENT` → `BSP_SD_Init()` 直接返回不走 `HAL_SD_Init()`。
+
+**根因**：该开发板的 TF 卡检测脚物理连接与假设不一致（可能不是卡插入拉低，或 PA8 未实际接到检测开关）。
+
+**修复**（`2a63fb6`）：
+- `BSP_SD_IsDetected()` 临时改为始终返回 `SD_PRESENT`，绕过卡检测先验证 SDMMC 硬件
+- `BSP_SD_Init()` 添加串口诊断打印 PA8 实际电平
+
+**状态**：PA8 卡检测逻辑待后续用万用表实测确定正确极性和连接关系。
+
+---
+
+### 问题 26：HAL_SD_ERROR_UNSUPPORTED_FEATURE（0x80000000）
+
+**现象**：绕过卡检测后，`HAL_SD_Init()` 返回 `HAL_ERROR`，`hsd1.State=READY` 但 `hsd1.ErrorCode=0x80000000` → `BSP_SD_Init()` 返回 `MSD_ERROR` → `f_mount` 报 FR_NOT_READY。耗时约 16 秒（HAL 内部超时重试）。
+
+**根因**：STM32H7 HAL 对某些 SDHC/SDXC 卡在初始化序列中标记 `HAL_SD_ERROR_UNSUPPORTED_FEATURE`（如 1.8V 电压切换不支持），但卡实际已进入 `READY` 状态。`BSP_SD_Init()` 只看返回值不检查 State，直接报错。
+
+**修复**（`effc5e7`）：
+- `BSP_SD_Init()` 中 `HAL_SD_Init()` 返回非 OK 时，检查 `hsd1.State == HAL_SD_STATE_READY`，若是则清除 `ErrorCode` 并设 `sd_state = MSD_OK` 继续。
+
+---
+
+### 问题 27：ConfigWideBusOperation 4 位模式 CRC 失败
+
+**现象**：修复 #26 后，`HAL_SD_Init()` 通过（state=READY），但 `HAL_SD_ConfigWideBusOperation(4B)` 返回 `HAL_ERROR`，`ErrorCode=0x01`（`HAL_SD_ERROR_CMD_CRC_FAIL`）。耗时缩短到约 2 秒。
+
+**根因**：4 位总线切换时 CMD 线或 D3 线（PC11）通信失败。可能原因：
+- PC11（D3）接触不良 / 虚焊
+- PD2（CMD）信号质量差
+- 该 TF 卡对高速 4 位模式兼容性问题
+
+**修复**（`b48adec`）：
+- 4 位模式失败时打印错误码，自动降级尝试 `SDMMC_BUS_WIDE_1B` 1 位模式
+- 1 位模式性能较低但功能完整，先确保基本读写可用
+
+**状态**：1 位模式是否通过待实测确认。4 位模式需排查硬件接线。
+
+---
+
+### 经验总结
+
+24. **SD 卡初始化必须在 FreeRTOS 调度器启动后执行** —— `sd_diskio.c` 使用 RTOS 消息队列处理 DMA 完成通知，`SD_initialize()` 内部有内核运行检查。所有 FatFs 操作必须放在任务上下文中。
+
+25. **物理卡检测需要实测确认极性和连接** —— 开发板的卡检测引脚不一定是"插卡拉低"。应先用万用表测 PA8 在插卡/不插卡时的电平，再确定正确的检出逻辑。如无可靠检测口，可暂时绕过。
+
+26. **STM32H7 HAL 的 SD_ERROR_UNSUPPORTED_FEATURE 是可恢复的** —— 部分 SD 卡初始化时 HAL 会标记此错误但卡已就绪（State=READY）。BSP 层应检查 State 而非仅依赖返回值。
+
+27. **4 位总线切换失败应降级为 1 位** —— CMD 或 D3 信号质量差会导致 CRC 失败。1 位模式（仅 D0）对布线要求低得多，作为软降级方案可保证基本功能。排查时优先检查 D3（PC11）和 CMD（PD2）的焊接/接线。

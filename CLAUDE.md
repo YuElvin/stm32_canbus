@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> 最后更新：2026-06-03 | 项目阶段：阶段 1（已通过）
+> 最后更新：2026-06-04 | 项目阶段：阶段 4（SDMMC 调试中）
 
 ---
 
@@ -164,7 +164,8 @@ SWD         : PA13 / PA14
 - [x] MAC 始终 100M FD 初始化（解决 PHY 快照速率误配）
 - [x] ping 192.168.1.88 通（上电/Reset 均 4/4 全通，RTT <1ms）
 - [x] QSPI W25Q128 驱动就绪（JEDEC ID 读取 + 扇区擦写 + 页编程 + 读回校验）
-- [x] SDMMC + FatFs 驱动就绪（挂载 + 写文件 + 读回校验）
+- [x] SDMMC + FatFs 驱动就绪（挂载 + 写文件 + 读回校验，1位总线模式，4位模式待排查硬件）
+- [ ] SD 卡检测 PA8 极性确认
 - [ ] 后续阶段：FDCAN
 
 ---
