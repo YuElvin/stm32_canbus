@@ -25,6 +25,8 @@
 /* USER CODE BEGIN FirstSection */
 /* can be used to modify / undefine following code or add new definitions */
 #include "main.h"
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END FirstSection */
 /* Includes ------------------------------------------------------------------*/
 #include "bsp_driver_sd.h"
@@ -46,6 +48,15 @@ __weak uint8_t BSP_SD_Init(void)
   /* Check if the SD card is plugged in the slot */
   if (BSP_SD_IsDetected() != SD_PRESENT)
   {
+    /* USER CODE BEGIN BSP_SD_Init_NotPresent */
+    {
+      extern UART_HandleTypeDef huart2;
+      char msg[64];
+      snprintf(msg, sizeof(msg), "\r\n[SD] Card NOT present (PA8=%d)\r\n",
+               (int)HAL_GPIO_ReadPin(SD_DETECT_GPIO_Port, SD_DETECT_Pin));
+      HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
+    }
+    /* USER CODE END BSP_SD_Init_NotPresent */
     return MSD_ERROR_SD_NOT_PRESENT;
   }
   /* HAL SD initialization */
@@ -296,11 +307,9 @@ __weak uint8_t BSP_SD_IsDetected(void)
   __IO uint8_t status = SD_PRESENT;
 
   /* USER CODE BEGIN IsDetectedSection */
-  /* PA8: input with pull-up. LOW = card inserted, HIGH = no card */
-  if (HAL_GPIO_ReadPin(SD_DETECT_GPIO_Port, SD_DETECT_Pin) != GPIO_PIN_RESET)
-  {
-    status = SD_NOT_PRESENT;
-  }
+  /* PA8: input with pull-up. Current hardware reads PA8=1 regardless
+     of card insertion. Bypassing card detect to verify SDMMC works first. */
+  status = SD_PRESENT;
   /* USER CODE END IsDetectedSection */
 
   return status;
