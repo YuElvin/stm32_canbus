@@ -1,6 +1,7 @@
 # AGENTS.md
 
 Compact guidance for AI agents working in this STM32H750 CAN gateway repo.
+> 中文版见 `AGENTS_CN.md`。修改任一文件时需同步更新另一份。
 
 ## Build
 
