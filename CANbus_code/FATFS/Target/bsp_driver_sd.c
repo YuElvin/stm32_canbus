@@ -87,6 +87,8 @@ __weak uint8_t BSP_SD_Init(void)
                  (unsigned long)hsd1.ErrorCode);
         HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
       }
+      /* Reinitialize SD to clear peripheral state from failed 4-bit attempt */
+      HAL_SD_Init(&hsd1);
       hsd1.ErrorCode = HAL_SD_ERROR_NONE;
       if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_1B) != HAL_OK)
       {
@@ -243,7 +245,16 @@ __weak uint8_t BSP_SD_Erase(uint32_t StartAddr, uint32_t EndAddr)
   */
 __weak uint8_t BSP_SD_GetCardState(void)
 {
-  return ((HAL_SD_GetCardState(&hsd1) == HAL_SD_CARD_TRANSFER ) ? SD_TRANSFER_OK : SD_TRANSFER_BUSY);
+  HAL_SD_CardStateTypeDef card_state = HAL_SD_GetCardState(&hsd1);
+  /* Card is "ready" when idle (0), in STBY (2), or in TRANSFER (1).
+     Card is "busy" only during active data transfer or programming. */
+  if (card_state == HAL_SD_CARD_SENDING   ||
+      card_state == HAL_SD_CARD_RECEIVING  ||
+      card_state == HAL_SD_CARD_PROGRAMMING)
+  {
+    return SD_TRANSFER_BUSY;
+  }
+  return SD_TRANSFER_OK;
 }
 
 /**
