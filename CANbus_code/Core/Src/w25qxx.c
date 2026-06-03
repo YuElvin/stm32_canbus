@@ -20,11 +20,9 @@ static HAL_StatusTypeDef W25QXX_WriteEnable(void)
   return HAL_QSPI_Command(&hqspi, &cmd, 100);
 }
 
-static HAL_StatusTypeDef W25QXX_WaitBusy(uint32_t timeout_ms)
+static HAL_StatusTypeDef W25QXX_ReadStatusReg1(uint8_t *sr)
 {
   QSPI_CommandTypeDef cmd = {0};
-  QSPI_AutoPollingTypeDef cfg = {0};
-
   cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
   cmd.Instruction       = W25Q_CMD_READ_STATUS_REG1;
   cmd.AddressMode       = QSPI_ADDRESS_NONE;
@@ -32,13 +30,24 @@ static HAL_StatusTypeDef W25QXX_WaitBusy(uint32_t timeout_ms)
   cmd.DummyCycles       = 0;
   cmd.NbData            = 1;
 
-  cfg.Match           = 0x00;
-  cfg.Mask            = W25Q_SR_BUSY;
-  cfg.MatchMode       = QSPI_MATCH_MODE_AND;
-  cfg.Interval        = 0x10;
-  cfg.AutomaticStop   = QSPI_AUTOMATIC_STOP_ENABLE;
+  if (HAL_QSPI_Command(&hqspi, &cmd, 100) != HAL_OK)
+    return HAL_ERROR;
+  return HAL_QSPI_Receive(&hqspi, sr, 100);
+}
 
-  return HAL_QSPI_AutoPolling(&hqspi, &cmd, &cfg, timeout_ms);
+static HAL_StatusTypeDef W25QXX_WaitBusy(uint32_t timeout_ms)
+{
+  uint32_t tick = HAL_GetTick();
+  uint8_t sr;
+
+  do {
+    if (W25QXX_ReadStatusReg1(&sr) != HAL_OK)
+      return HAL_ERROR;
+    if ((sr & W25Q_SR_BUSY) == 0)
+      return HAL_OK;
+  } while ((HAL_GetTick() - tick) < timeout_ms);
+
+  return HAL_TIMEOUT;
 }
 
 HAL_StatusTypeDef W25QXX_ReadJEDEC(uint8_t *manufacturer, uint8_t *memType, uint8_t *capacity)
@@ -68,10 +77,28 @@ HAL_StatusTypeDef W25QXX_ReadJEDEC(uint8_t *manufacturer, uint8_t *memType, uint
 HAL_StatusTypeDef W25QXX_EraseSector(uint32_t addr)
 {
   QSPI_CommandTypeDef cmd = {0};
+  uint8_t sr;
+  char dbg[48];
+
+  /* Read SR before WriteEnable */
+  W25QXX_ReadStatusReg1(&sr);
+  sprintf(dbg, " SR_before=%02X", sr);
+  qspi_print(dbg);
 
   if (W25QXX_WriteEnable() != HAL_OK)
   {
     qspi_print(" WREN_FAIL");
+    return HAL_ERROR;
+  }
+
+  /* Verify WEL bit set */
+  W25QXX_ReadStatusReg1(&sr);
+  sprintf(dbg, " SR_after_WREN=%02X", sr);
+  qspi_print(dbg);
+
+  if ((sr & W25Q_SR_WEL) == 0)
+  {
+    qspi_print(" WEL_NOT_SET");
     return HAL_ERROR;
   }
 
@@ -91,7 +118,9 @@ HAL_StatusTypeDef W25QXX_EraseSector(uint32_t addr)
 
   if (W25QXX_WaitBusy(4000) != HAL_OK)
   {
-    qspi_print(" BUSY_FAIL");
+    W25QXX_ReadStatusReg1(&sr);
+    sprintf(dbg, " BUSY_TIMEOUT SR=%02X", sr);
+    qspi_print(dbg);
     return HAL_ERROR;
   }
   return HAL_OK;
