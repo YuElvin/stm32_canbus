@@ -1,9 +1,12 @@
 #include "sd_verify.h"
 #include "fatfs.h"
+#include "sdmmc.h"
+#include "bsp_driver_sd.h"
 #include <stdio.h>
 #include <string.h>
 
 extern UART_HandleTypeDef huart2;
+extern SD_HandleTypeDef hsd1;
 
 static void sd_print(const char *s)
 {
@@ -25,11 +28,33 @@ uint8_t SD_Verify(void)
 
   sd_print("\r\n[SD] TF Card Verify Start\r\n");
 
-  /* 1. Mount */
+  /* 0. Check card detect (BSP_SD_IsDetected is weak, always returns present) */
+  sprintf(buf, "[SD] Card detect: %s\r\n",
+          BSP_SD_IsDetected() == SD_PRESENT ? "PRESENT" : "NOT_PRESENT");
+  sd_print(buf);
+
+  /* 1. Try to get SD card info before mounting */
+  HAL_SD_CardInfoTypeDef card_info;
+  if (HAL_SD_GetCardInfo(&hsd1, &card_info) == HAL_OK)
+  {
+    sprintf(buf, "[SD] Card type=%lu BlockNbr=%lu BlockSize=%lu\r\n",
+            card_info.CardType, card_info.BlockNbr, card_info.BlockSize);
+    sd_print(buf);
+  }
+  else
+  {
+    sd_print("[SD] WARN: HAL_SD_GetCardInfo failed (no card or init error)\r\n");
+  }
+
+  /* 2. Mount */
   fr = f_mount(&SDFatFS, SDPath, 1);
   if (fr != FR_OK)
   {
     sprintf(buf, "[SD] FAIL: f_mount error %d\r\n", fr);
+    sd_print(buf);
+    /* Print HAL SD state for debugging */
+    sprintf(buf, "[SD] HAL SD state=%lu error=%lu\r\n",
+            hsd1.State, hsd1.ErrorCode);
     sd_print(buf);
     return 0;
   }
