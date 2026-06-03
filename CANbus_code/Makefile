@@ -42,6 +42,7 @@ Core/Src/freertos.c \
 Core/Src/fdcan.c \
 Core/Src/quadspi.c \
 Core/Src/w25qxx.c \
+Core/Src/sd_verify.c \
 Core/Src/sdmmc.c \
 Core/Src/usart.c \
 Core/Src/stm32h7xx_it.c \
@@ -88,7 +89,7 @@ Middlewares/Third_Party/FatFs/src/diskio.c \
 Middlewares/Third_Party/FatFs/src/ff.c \
 Middlewares/Third_Party/FatFs/src/ff_gen_drv.c \
 Middlewares/Third_Party/FatFs/src/option/syscall.c \
-Middlewares/Third_Party/FatFs/src/option/cc936.c \
+Middlewares/Third_Party/FatFs/src/option/ccsbcs.c \
 Middlewares/Third_Party/FreeRTOS/Source/portable/Common/mpu_wrappers_v2.c \
 Middlewares/Third_Party/FreeRTOS/Source/croutine.c \
 Middlewares/Third_Party/FreeRTOS/Source/event_groups.c \
