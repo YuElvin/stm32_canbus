@@ -113,7 +113,7 @@ int main(void)
   MX_GPIO_Init();
   /* MX_FDCAN1_Init(); */     /* Disabled for ETH-only test */
   MX_QUADSPI_Init();
-  MX_SDMMC1_SD_Init();
+  /* MX_SDMMC1_SD_Init(); */   /* FatFs calls BSP_SD_Init() internally */
   MX_USART2_UART_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
