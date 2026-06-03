@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> 最后更新：2026-05-25 | 项目阶段：阶段 1
+> 最后更新：2026-06-03 | 项目阶段：阶段 1（已通过）
 
 ---
 
@@ -14,22 +14,16 @@ STM32H750VBT6 CAN/CAN-FD 数据采集解析网关，当前处于**阶段 1（以
 
 ## 编译命令
 
-工具链需手动指定路径（make 和 arm-none-eabi-gcc 装在非标准位置），须在 **Git Bash** 中运行：
+工具链需手动指定路径，PowerShell 中运行：
 
-```bash
-MAKE="/c/Users/ben.luo/AppData/Local/Microsoft/WinGet/Packages/ezwinports.make_Microsoft.Winget.Source_8wekyb3d8bbwe/bin/make.exe"
-ARM_PATH="/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 Rel1/bin"
-export PATH="$ARM_PATH:$PATH"
-cd "/d/Ben/stm32_canbus_claude/CANbus_code"
-
-"$MAKE"                        # 增量编译
-rm -rf build/ && "$MAKE"       # 全量编译（make clean 在 Windows 下有问题）
-rm -f build/foo.o && "$MAKE"   # 强制重编单个文件
+```powershell
+$env:PATH = "D:\arm-gnu-toolchain-14.2\bin;$env:PATH"
+make -j8
 ```
 
-PowerShell 的 make 找不到 sh.exe，会失败。编译输出在 `CANbus_code/build/`。
-
-**当前 Flash 占用**：约 76KB / 128KB（`-Og` 调试优化）。
+- 全量编译：`rm -r -Force build/; make`（make clean 在 Windows 下不可靠）
+- 编译输出在 `CANbus_code/build/`，产物含 `.bin` `.hex` `.elf`
+- **当前 Flash 占用**：约 78KB / 128KB（`-Og` 调试优化）
 
 ---
 
@@ -68,6 +62,7 @@ Rx 路径：Rx Pool 在 Non-Cacheable 区域，接收无需 Cache 维护。
 | `ETH_PAD_SIZE` | `0`（不设置） | 已通过覆写 `SMEMCPY` 为逐字节拷贝解决非对齐访问问题（见 `lwipopts.h:124-138`）。设置 `ETH_PAD_SIZE=2` 反而导致 LwIP pbuf 对齐计算错误 |
 | `MEM_SIZE` | `16*1024` | LwIP 默认 1600B 不够，pbuf/TCP 缓冲区分配失败触发 assert |
 | `LWIP_RAM_HEAP_POINTER` | `0x30005000` | 必须在 Rx_PoolSection 之后（见上方布局） |
+| `TCPIP_THREAD_STACKSIZE` | `2048` | **必须≥2048 words（8KB）**。PC 直接发 ICMP（无 ARP）时调用链 `ip4_input→etharp_query→etharp_request` 极深，1024（4KB）会栈溢出 → FreeRTOS queue assert 崩溃 |
 
 ### 4. LAN8720 PHY 驱动适配
 
@@ -75,11 +70,14 @@ Rx 路径：Rx Pool 在 Non-Cacheable 区域，接收无需 Cache 维护。
 
 **已实现的解决方案**（`ethernetif.c` `PHY_PRE_CONFIG` 段）：用 BSR（reg 0x01）探测地址 0 和 1，找到有效值后直接设置 `LAN8742.DevAddr` 并置 `Is_Initialized=1`，跳过 SMR 扫描。
 
-`ETH_PHY_IO_Init()` 中有 `HAL_Delay(1000)`，LAN8720 模块无 RESET 引脚，上电后需等待 1000ms MDIO 才稳定。**不能删除或缩短**。
+`ETH_PHY_IO_Init()` 中有 `HAL_Delay(2000)`，LAN8720 模块无 RESET 引脚，上电后需等待 2000ms MDIO 才稳定。**不能删除或缩短**。
+
+此外 BSR 探测已扩展到 0-31 全地址 + 5 次重试（每次间隔 500ms），因为某些 LAN8720 模块冷启动 MDIO 稳定时间更长。
 
 ### 5. FreeRTOS 配置要求
 
 - `configTOTAL_HEAP_SIZE = 32768`（32KB）：LwIP + ETH 需要 4 个任务（defaultTask/tcpip_thread/EthIf/EthLink）+ 队列/信号量，15KB 不够。
+- **所有网络任务栈必须 ≥ 2048 words（8KB）**：EthIf、EthLink、tcpip_thread 三个任务。LwIP + HAL ETH 调用链深，4KB 栈在特定路径（PC 直接发 ICMP → etharp_query 排队）会溢出崩溃。
 - 心跳灯（PE7）在独立的 `heartbeatTask`（osPriorityLow）中，与 LwIP 初始化解耦，是系统活体的唯一可靠指示。
 
 ### 6. 外设初始化顺序（`main.c`）
@@ -95,6 +93,14 @@ MX_USART2_UART_Init();
 ```
 
 恢复外设时逐个打开，每次验证通过后再开下一个。
+
+### 7. MAC 速率初始化约束
+
+`low_level_init` 中 MAC 速率**必须始终初始化为 100M Full Duplex**，不能根据 PHY 瞬时快照决定。PHY 自协商期间 MDIO 寄存器值在 `5(10M HD)→6(auto-neg)→1(down)→2(100M FD)` 之间跳变，抓到非 100M FD 状态会导致 MAC/PHY 速率不匹配 → DMA rx=0 全程收不到包。EthLink 线程 link 稳定后会重新配置。
+
+### 8. Gratuitous ARP 冷启动通告
+
+`low_level_init` 中 `HAL_ETH_Start_IT` 之后调用 `etharp_gratuitous(netif)` 主动广播本机 IP/MAC。让 PC 在 STM32 重启后刷新 ARP 缓存，避免需要手动 `arp -d`。
 
 ---
 
@@ -115,7 +121,7 @@ MX_USART2_UART_Init();
 | 文件 | 修改内容 |
 |---|---|
 | `STM32H750XX_FLASH.ld` | 末尾加了 `.lwip_sec` 段（ETH DMA 描述符强制映射到 D2 SRAM） |
-| `LWIP/Target/ethernetif.c` | PHY BSR 探测、1000ms 延时、SMEMCPY 覆写、EthIf 栈 512 words、串口打印 |
+| `LWIP/Target/ethernetif.c` | PHY BSR 探测全地址+重试、2000ms 延时、SMEMCPY 覆写、EthIf 栈 2048 words、gratuitous ARP、MAC 始终 100M FD 初始化、串口打印 |
 | `LWIP/Target/lwipopts.h` | `SMEMCPY` 覆写为逐字节拷贝、`MEM_SIZE=16KB`、`LWIP_RAM_HEAP_POINTER=0x30005000` |
 | `Core/Src/freertos.c` | defaultTask（LwIP init 后退出）+ heartbeatTask（PE7 心跳） |
 | `Core/Src/main.c` | 注释了 FDCAN/QSPI/SDMMC/FATFS 初始化；加了 vAssertCalled/Error_Handler 打印 |
@@ -143,13 +149,16 @@ SWD         : PA13 / PA14
 
 ## 验证状态（阶段 1）
 
-- [x] 编译通过（76KB，零警告）
-- [x] LAN8720 PHY 地址探测（addr=1，BSR）
-- [x] MPU/Cache 配置修正（D2 SRAM Normal Non-Cacheable）
+- [x] 编译通过（78KB，零警告）
+- [x] LAN8720 PHY 地址探测（addr=1，BSR 全地址扫描）
+- [x] MPU/Cache 配置修正（D2 SRAM Normal Non-Cacheable, B=0）
 - [x] SMEMCPY 逐字节拷贝（非对齐安全）
 - [x] FreeRTOS 堆 32KB + MEM_SIZE 16KB
 - [x] heartbeatTask 独立心跳
-- [ ] ping 192.168.1.88 通（待上板验证）
+- [x] gratuitous ARP 冷启动通告
+- [x] tcpip_thread 栈 8KB（解决 ICMP 直接发场景崩溃）
+- [x] MAC 始终 100M FD 初始化（解决 PHY 快照速率误配）
+- [x] ping 192.168.1.88 通（上电/Reset 均 4/4 全通，RTT <1ms）
 - [ ] 后续阶段：FDCAN / QSPI / SDMMC
 
 ---
