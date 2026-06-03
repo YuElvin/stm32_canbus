@@ -1,6 +1,6 @@
 # 调试日志 — STM32H750 + LAN8720 以太网 Ping 验证
 
-> 最后更新：2026-06-03 | 项目阶段：阶段 1 | 覆盖 commit `7e8ebc3` ~ `96be154`
+> 最后更新：2026-06-03 | 项目阶段：阶段 1（已通过）| 覆盖 commit `7e8ebc3` ~ `bebebe9`
 
 ## 一、目标
 
@@ -325,6 +325,10 @@ SCB_CleanDCache_by_Addr((uint32_t *)q->payload,
 | `31154a0` | tcpip_thread 邮箱管道诊断计数器（q/P/L） |
 | `5cf5d8c` | etharp_input 决策路径计数器（reply_ok/not_for_us/uc/bh） |
 | `96be154` | etharp_input 打印 ARP tgt IP vs netif IP 对比（前 8 包） |
+| `2f79b76` | 清理: 移除第三轮诊断代码（tcpip/etharp 计数器和 IP 打印） |
+| `dafc699` | 修复: gratuitous ARP 广播 + netif_set_up 移到 Start_IT 之后 |
+| `a764c97` | 修复: TCPIP_THREAD_STACKSIZE 1024→2048（解决 Reset 后 ping 崩溃） |
+| `bebebe9` | 修复: low_level_init 始终用 100M FD 初始化 MAC（解决 rx=0） |
 
 ---
 
@@ -405,7 +409,7 @@ ARP ok=1 no=0 uc=0 bh=0
 ```
 Ping 4 包全通（最短 2ms，最长 38ms）。
 
-**修复**：无需代码更改。开发调试时每次 Reset 后先 `arp -d 192.168.1.88`。
+**修复**：启动时发送 gratuitous ARP（`etharp_gratuitous(netif)`）主动通告本机 IP/MAC，使 PC 刷新 ARP 缓存。配合后续修复（#28、#29），Reset 后直接 ping 即可通，无需 `arp -d`。
 
 ---
 
@@ -424,13 +428,13 @@ Ping 4 包全通（最短 2ms，最长 38ms）。
 
 ---
 
-### 问题 27：`netif_set_up` 在 `HAL_ETH_Start_IT` 之前触发 LwIP ARP
+### 问题 27：`netif_set_up` 在 `HAL_ETH_Start_IT` 之前触发 LwIP ARP（已修复）
 
 **现象**：`[LLO#1]` 调用时 `gState=16`（BUSY_TX），DMA 未启动，首包 ARP 丢失。`HAL_ETH_Start_IT` 之后才被调用。
 
-**原因**：`low_level_init()` 中 `netif_set_up(netif)`（`ethernetif.c:395`）触发 LwIP 立即发 ARP，但 `HAL_ETH_Start_IT()` 在 `ethernetif.c:410` 之后才执行。
+**原因**：`low_level_init()` 中 `netif_set_up(netif)` 触发 LwIP 立即发 ARP，但 `HAL_ETH_Start_IT()` 在其后执行。
 
-**状态**：低优先。LwIP 会 ARP 重试，第二次 ARP 正常发出。Reset 后首次 ping 可能多等 200ms。
+**修复**（commit `dafc699`）：将 `netif_set_up`/`netif_set_link_up` 移到 `HAL_ETH_Start_IT` 之后执行。同时加入 `etharp_gratuitous(netif)` 广播通告本机 MAC。
 
 ---
 
@@ -438,31 +442,85 @@ Ping 4 包全通（最短 2ms，最长 38ms）。
 
 **现象**：ping 通道正常但偶尔出现 `[TX] ERR=2 gS=64`（HAL_ETH_ERROR_BUSY），随后自动恢复。
 
-**状态**：暂不影响功能。如果后续频繁出现再排查。
+**原因**：两个 TX 包间隔太近，第二个包到达时上一个描述符尚未释放。`low_level_output` 的 `do-while` 循环会重试，自动恢复。
+
+**状态**：已知，每次 ping 出现一次，不影响丢包，无需修复。
 
 ---
 
-## 九、当前状态与下一步
+## 九、第四轮调试（commit `dafc699` ~ `bebebe9`）
 
-**当前状态**：Ping 验证通过（Reset 后 `arp -d` 清除 PC 缓存即可正常 ping 通）
+> 第三轮确认了 ARP 响应链路正常。本阶段解决 Reset 后直接 ping 的稳定性和崩溃问题。
+
+### 问题 29：tcpip_thread 栈溢出 → queue.c:894 断言崩溃（已修复）
+
+**现象**：Reset 后 PC 用缓存 MAC 直接发 ICMP（无 ARP），STM32 崩溃 `[ASSERT] queue.c:894`。
+
+**根因分析**：
+```
+[RX#1] type=0800               ← PC 直接发 ICMP（无 ARP 请求）
+[LLO#3] hdr=FF:FF:FF:FF:FF:FF ← LwIP 为发回包做 etharp_query
+[ASSERT] queue.c:894           ← 崩溃
+```
+
+PC 发 ARP 请求路径：`etharp_input → etharp_raw`（栈浅）。PC 直接发 ICMP 路径：`ip4_input → icmp_echo_reply → ip_output → etharp_output(miss) → etharp_query(排队 pbuf + 发 ARP)`，调用链深得多。`TCPIP_THREAD_STACKSIZE=1024`（4KB）耗尽，写坏 FreeRTOS 队列结构。
+
+**修复**（commit `a764c97`）：`TCPIP_THREAD_STACKSIZE 1024→2048`（8KB），与 EthIf/EthLink 一致。
+
+---
+
+### 问题 30：MAC 速率误配导致 rx=0 全程收不到包（已修复）
+
+**现象**：上电后 rx=0 持续数十秒，ping 全部"无法访问目标主机"，但下一个 Reset 后又正常。
+
+**根因分析**：
+
+| 启动 | init 时刻 PHY 快照 | MAC 配置 | 结果 |
+|---|---|---|---|
+| 失败 | `link=5`（10M HD） | 10M HD | MAC/PHY 速率不匹配，DMA 收不到任何包 |
+| 成功 | `link=6`（auto-neg） | auto-neg 过程 | 后续 EthLink 纠正为 100M FD |
+
+PHY 自协商期间 MDIO 寄存器值在 `5(10M HD) → 6(auto-neg) → 1(down) → 2(100M FD)` 之间跳变。`low_level_init` 取瞬时快照决定 MAC 速率，抓到非 100M FD 状态即配错。
+
+**修复**（commit `bebebe9`）：`low_level_init` 不再根据 PHY 快照配置 MAC，**始终初始化为 100M Full Duplex**。EthLink 线程在 link 稳定后（debounce 500ms）重新配置正确速率。
+
+---
+
+### 修复效果验证
+
+修复后测试：上电直接 ping（无 `arp -d`）→ 4/4 通，RTT <1ms。Reset 后直接 ping → 4/4 通。全程无断言/崩溃。
+
+Reset 场景（PC 用缓存 MAC 直接发 ICMP）：
+```
+[RX#1] type=0800              ← PC 直接发 ICMP
+[LLO#3] hdr=FF:FF:FF:FF:FF:FF ← STM32 ARP 查询 PC MAC（tcpip 8KB 栈不崩）
+[RX#2] type=0806              ← PC ARP 回复
+[LLO#4] hdr=00:E2:69:7D:EC:40 ← ICMP 回复 → ping 通
+```
+
+---
+
+## 十、当前状态与下一步
+
+**当前状态**：阶段 1（以太网 Ping 验证）**已完成，通过**
 
 **已完成**：
-- [x] Ping 通：ARP 请求/回复/ICMP Echo 全链路验证通过
-- [x] PHY BSR 探测冷启动修复
-- [x] 栈溢出修复（EthIf 2048w + EthLink 2048w）
+- [x] Ping 通：上电/Reset 直接 ping 4/4 全通，无需 arp -d
+- [x] gratuitous ARP 广播通告（解决 PC ARP 缓存过期）
+- [x] tcpip_thread 栈增加至 8KB（解决 ICMP 直接发场景崩溃）
+- [x] MAC 始终 100M FD 初始化（解决 PHY 快照速率误配导致 rx=0）
+- [x] PHY BSR 探测全地址扫描 + 重试
+- [x] 栈溢出修复（EthIf 2048w + EthLink 2048w + tcpip 2048w）
 - [x] 栈溢出钩子诊断
 - [x] ETH 中断优先级 5→6
 - [x] PacketAddress 清除
 - [x] RX 描述符 4→8
 - [x] ETH DMA 永远启动
-- [x] tcpip_thread 邮箱管道诊断（q/P/L 计数器）
-- [x] etharp 决策路径诊断（reply_ok/not_for_us/uc/bh 计数器）
-- [x] etharp IP 地址对比诊断
+- [x] netif_set_up 移到 Start_IT 之后
 
 **已知残留问题**：
 - [ ] PHY 链路抖动（硬件层面，debounce 已防御）
-- [ ] `netif_set_up` 在 `Start_IT` 之前（首包 ARP 丢失，LwIP 重试解决）
-- [ ] `TX ERR=2` 偶发（自动恢复）
+- [ ] TX ERR=2 偶发（描述符忙，自动恢复，不影响丢包）
 
 **下一步**：进入阶段 2（FDCAN 数据采集）
 
@@ -524,3 +582,9 @@ ping 192.168.1.88 -S 192.168.1.100
 11. **ARP 不通先检查 PC 侧缓存** —— Windows ARP 表在硬件地址变化后不会自动更新。Reset 后 MCU MAC 重新初始化（虽然不变，但 PC 可能因 DHCP/APIPA 等过程把条目标记为 stale）
 12. **分层诊断比一次性加满打印更高效** —— 先确认管道，再确认协议层，最后对比数值。每层收敛范围后下一层更有针对性
 13. **诊断计数器优于实时打印** —— volatile 计数器不阻塞、不会溢出、不会被淹没。只在周期性 stat 行中汇总打印，零性能影响
+
+### 第四轮调试经验
+
+14. **FreeRTOS + LwIP 栈溢出是崩溃王** —— EthIf/EthLink/tcpip_thread 三个任务均需 ≥8KB 栈。`configCHECK_FOR_STACK_OVERFLOW=2` + `vApplicationStackOverflowHook` 是必备诊断。栈溢出表现随机（queue.c assert / cmsis_os2 assert），根本原因不是队列本身而是 TCB 被写坏
+15. **PHY 自协商期间不要信 MDIO 快照** —— LAN8720 的自协商过程中寄存器值频繁跳变（5→6→1→2）。初始化 MAC 速率应始终用目标值（100M FD），由独立 link 线程在稳定后纠正，不能取瞬时值
+16. **gratuitous ARP 解决 PC ARP 缓存过期** —— 重启后主动广播通告 MAC，避免依赖 PC 侧 `arp -d`。`etharp_gratuitous(netif)` 发 ARP Request（RFC 5227 格式），PC 收到后刷新缓存
