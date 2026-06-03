@@ -79,7 +79,20 @@ __weak uint8_t BSP_SD_Init(void)
     /* Enable wide operation */
     if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B) != HAL_OK)
     {
-      sd_state = MSD_ERROR;
+      /* USER CODE BEGIN BSP_SD_Init_WideBusFail */
+      {
+        extern UART_HandleTypeDef huart2;
+        char msg[64];
+        snprintf(msg, sizeof(msg), "\r\n[SD] 4-bit bus failed (err=0x%lX), falling back to 1-bit\r\n",
+                 (unsigned long)hsd1.ErrorCode);
+        HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
+      }
+      hsd1.ErrorCode = HAL_SD_ERROR_NONE;
+      if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_1B) != HAL_OK)
+      {
+        sd_state = MSD_ERROR;
+      }
+      /* USER CODE END BSP_SD_Init_WideBusFail */
     }
   }
 
