@@ -62,7 +62,7 @@ __weak uint8_t BSP_SD_Init(void)
   /* HAL SD initialization */
   {
     extern UART_HandleTypeDef huart2;
-    char msg[80];
+    char msg[64];
     sd_state = HAL_SD_Init(&hsd1);
     snprintf(msg, sizeof(msg), "\r\n[SD] HAL_SD_Init: ret=%d state=%lu err=0x%lX\r\n",
              (int)sd_state, (unsigned long)hsd1.State, (unsigned long)hsd1.ErrorCode);
@@ -75,10 +75,8 @@ __weak uint8_t BSP_SD_Init(void)
      ready (State=HAL_SD_STATE_READY). Clear the error and proceed. */
   if (sd_state != MSD_OK && hsd1.State == HAL_SD_STATE_READY)
   {
-    extern UART_HandleTypeDef huart2;
     hsd1.ErrorCode = HAL_SD_ERROR_NONE;
     sd_state = MSD_OK;
-    HAL_UART_Transmit(&huart2, (uint8_t *)"[SD] UNSUPPORTED_FEATURE cleared\r\n", 35, 200);
   }
   /* USER CODE END BSP_SD_Init_AfterHAL */
 
@@ -89,27 +87,20 @@ __weak uint8_t BSP_SD_Init(void)
     char msg[80];
     HAL_StatusTypeDef ret4;
 
-    HAL_UART_Transmit(&huart2, (uint8_t *)"[SD] Trying 4-bit bus...\r\n", 26, 200);
     ret4 = HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B);
-    snprintf(msg, sizeof(msg), "[SD] 4-bit result: ret=%d err=0x%lX\r\n",
-             (int)ret4, (unsigned long)hsd1.ErrorCode);
-    HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
-
     if (ret4 != HAL_OK)
     {
-      HAL_StatusTypeDef ret1;
-      /* Reinitialize SD to clear peripheral state from failed 4-bit attempt */
-      HAL_UART_Transmit(&huart2, (uint8_t *)"[SD] Reinit + 1-bit fallback...\r\n", 33, 200);
-      HAL_SD_Init(&hsd1);
-      hsd1.ErrorCode = HAL_SD_ERROR_NONE;
-      ret1 = HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_1B);
-      snprintf(msg, sizeof(msg), "[SD] 1-bit result: ret=%d err=0x%lX\r\n",
-               (int)ret1, (unsigned long)hsd1.ErrorCode);
+      snprintf(msg, sizeof(msg), "\r\n[SD] 4-bit bus failed (err=0x%lX), using 1-bit\r\n",
+               (unsigned long)hsd1.ErrorCode);
       HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
-      if (ret1 != HAL_OK)
-      {
-        sd_state = MSD_ERROR;
-      }
+      /* Do NOT reinitialize — HAL_SD_Init already configured 1-bit mode.
+         Reinitializing (CMD0 reset) corrupts the card state and causes
+         all subsequent commands to fail with CMD_CRC_FAIL. */
+      hsd1.ErrorCode = HAL_SD_ERROR_NONE;
+    }
+    else
+    {
+      HAL_UART_Transmit(&huart2, (uint8_t *)"[SD] 4-bit bus OK\r\n", 19, 200);
     }
   }
 
