@@ -60,7 +60,14 @@ __weak uint8_t BSP_SD_Init(void)
     return MSD_ERROR_SD_NOT_PRESENT;
   }
   /* HAL SD initialization */
-  sd_state = HAL_SD_Init(&hsd1);
+  {
+    extern UART_HandleTypeDef huart2;
+    char msg[80];
+    sd_state = HAL_SD_Init(&hsd1);
+    snprintf(msg, sizeof(msg), "\r\n[SD] HAL_SD_Init: ret=%d state=%lu err=0x%lX\r\n",
+             (int)sd_state, (unsigned long)hsd1.State, (unsigned long)hsd1.ErrorCode);
+    HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
+  }
 
   /* USER CODE BEGIN BSP_SD_Init_AfterHAL */
   /* STM32H7 HAL may return HAL_ERROR with ErrorCode=0x80000000
@@ -68,33 +75,41 @@ __weak uint8_t BSP_SD_Init(void)
      ready (State=HAL_SD_STATE_READY). Clear the error and proceed. */
   if (sd_state != MSD_OK && hsd1.State == HAL_SD_STATE_READY)
   {
+    extern UART_HandleTypeDef huart2;
     hsd1.ErrorCode = HAL_SD_ERROR_NONE;
     sd_state = MSD_OK;
+    HAL_UART_Transmit(&huart2, (uint8_t *)"[SD] UNSUPPORTED_FEATURE cleared\r\n", 35, 200);
   }
   /* USER CODE END BSP_SD_Init_AfterHAL */
 
   /* Configure SD Bus width (4 bits mode selected) */
   if (sd_state == MSD_OK)
   {
-    /* Enable wide operation */
-    if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B) != HAL_OK)
+    extern UART_HandleTypeDef huart2;
+    char msg[80];
+    HAL_StatusTypeDef ret4;
+
+    HAL_UART_Transmit(&huart2, (uint8_t *)"[SD] Trying 4-bit bus...\r\n", 26, 200);
+    ret4 = HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B);
+    snprintf(msg, sizeof(msg), "[SD] 4-bit result: ret=%d err=0x%lX\r\n",
+             (int)ret4, (unsigned long)hsd1.ErrorCode);
+    HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
+
+    if (ret4 != HAL_OK)
     {
-      /* USER CODE BEGIN BSP_SD_Init_WideBusFail */
-      {
-        extern UART_HandleTypeDef huart2;
-        char msg[64];
-        snprintf(msg, sizeof(msg), "\r\n[SD] 4-bit bus failed (err=0x%lX), falling back to 1-bit\r\n",
-                 (unsigned long)hsd1.ErrorCode);
-        HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
-      }
+      HAL_StatusTypeDef ret1;
       /* Reinitialize SD to clear peripheral state from failed 4-bit attempt */
+      HAL_UART_Transmit(&huart2, (uint8_t *)"[SD] Reinit + 1-bit fallback...\r\n", 33, 200);
       HAL_SD_Init(&hsd1);
       hsd1.ErrorCode = HAL_SD_ERROR_NONE;
-      if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_1B) != HAL_OK)
+      ret1 = HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_1B);
+      snprintf(msg, sizeof(msg), "[SD] 1-bit result: ret=%d err=0x%lX\r\n",
+               (int)ret1, (unsigned long)hsd1.ErrorCode);
+      HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
+      if (ret1 != HAL_OK)
       {
         sd_state = MSD_ERROR;
       }
-      /* USER CODE END BSP_SD_Init_WideBusFail */
     }
   }
 
