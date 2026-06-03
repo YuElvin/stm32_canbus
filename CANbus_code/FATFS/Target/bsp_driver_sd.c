@@ -61,6 +61,18 @@ __weak uint8_t BSP_SD_Init(void)
   }
   /* HAL SD initialization */
   sd_state = HAL_SD_Init(&hsd1);
+
+  /* USER CODE BEGIN BSP_SD_Init_AfterHAL */
+  /* STM32H7 HAL may return HAL_ERROR with ErrorCode=0x80000000
+     (HAL_SD_ERROR_UNSUPPORTED_FEATURE) while the card is actually
+     ready (State=HAL_SD_STATE_READY). Clear the error and proceed. */
+  if (sd_state != MSD_OK && hsd1.State == HAL_SD_STATE_READY)
+  {
+    hsd1.ErrorCode = HAL_SD_ERROR_NONE;
+    sd_state = MSD_OK;
+  }
+  /* USER CODE END BSP_SD_Init_AfterHAL */
+
   /* Configure SD Bus width (4 bits mode selected) */
   if (sd_state == MSD_OK)
   {
