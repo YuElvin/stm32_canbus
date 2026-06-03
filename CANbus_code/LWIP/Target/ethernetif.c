@@ -442,6 +442,8 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   ETH_TxPacketConfig tx_config;
 
   /* One-time diagnostic: confirm low_level_output is called */
+  /* LLO diagnostic -- disabled to reduce serial noise */
+#if 0
   {
     static uint8_t llo_cnt = 0;
     if (llo_cnt < 5) {
@@ -454,6 +456,7 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
       HAL_UART_Transmit(&huart2, (uint8_t*)xm, strlen(xm), 50);
     }
   }
+#endif
 
   memset(Txbuffer, 0 , ETH_TX_DESC_CNT*sizeof(ETH_BufferTypeDef));
 
@@ -493,9 +496,8 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   tx_config.TxBuffer = Txbuffer;
   tx_config.pData = p;
 
-  /* USER CODE BEGIN TX_DIAG */
-  /* Print TX packet info for diagnostics.
-     Always print ARP (type=0806), print others every 10th. */
+  /* USER CODE BEGIN TX_DIAG -- disabled to reduce serial noise */
+#if 0
   {
     static uint32_t tx_diag_cnt = 0;
     uint8_t *d = (uint8_t *)p->payload;
@@ -514,6 +516,7 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
       }
     }
   }
+#endif
   /* USER CODE END TX_DIAG */
 
   pbuf_ref(p);
@@ -569,7 +572,8 @@ static struct pbuf * low_level_input(struct netif *netif)
     if (p != NULL)
     {
       eth_rx_count++;
-      /* Print first 14 bytes of first few RX packets for diagnostics */
+      /* Print first few RX packets for diagnostics -- disabled to reduce serial noise */
+#if 0
       if (eth_rx_count <= 3 && p->len >= 14)
       {
         uint8_t *d = (uint8_t *)p->payload;
@@ -581,6 +585,7 @@ static struct pbuf * low_level_input(struct netif *netif)
                 d[12], d[13]);
         HAL_UART_Transmit(&huart2, (uint8_t*)rmsg, strlen(rmsg), 100);
       }
+#endif
     }
   }
 
@@ -927,8 +932,6 @@ void ethernet_link_thread(void* argument)
   ETH_MACConfigTypeDef MACConf = {0};
   int32_t PHYLinkState = 0;
   uint32_t linkchanged = 0U, speed = 0U, duplex = 0U;
-  int32_t prev_link = -99;
-  uint32_t print_tick = 0;
 
   /* Debounce state: PHY state must be stable for STABLE_THRESHOLD reads
      before being acted on. MDIO can return spurious values especially
@@ -949,7 +952,8 @@ void ethernet_link_thread(void* argument)
   {
   PHYLinkState = LAN8742_GetLinkState(&LAN8742);
 
-  /* Print link state changes and periodic stats */
+  /* Print link state changes and periodic stats -- disabled to reduce serial noise */
+#if 0
   {
     char dbg[96];
     if (PHYLinkState != prev_link) {
@@ -967,6 +971,7 @@ void ethernet_link_thread(void* argument)
       HAL_UART_Transmit(&huart2, (uint8_t*)dbg, strlen(dbg), 100);
     }
   }
+#endif
 
   /* Debounce: only act on PHY state when it has been stable for STABLE_THRESHOLD reads */
   if (PHYLinkState == candidate_link) {
