@@ -361,6 +361,7 @@ static void low_level_init(struct netif *netif)
 
   if (hal_eth_init_status == HAL_OK)
   {
+    int link_up = 0;
     PHYLinkState = LAN8742_GetLinkState(&LAN8742);
 
     /* USER CODE BEGIN PHY_LINK_CHECK */
@@ -403,8 +404,7 @@ static void low_level_init(struct netif *netif)
         speed = ETH_SPEED_100M;
         break;
       }
-      netif_set_up(netif);
-      netif_set_link_up(netif);
+      link_up = 1;
     }
 
     /* Get MAC Config and apply speed/duplex */
@@ -423,6 +423,17 @@ static void low_level_init(struct netif *netif)
               (start_ret == HAL_OK) ? "OK" : "FAIL",
               (uint32_t)heth.gState);
       HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+    }
+
+    /* Only now mark netif UP (after DMA is running) so LwIP's ARP
+       probes land on a live TX path. Also send gratuitous ARP to
+       announce our MAC to the link partner, forcing it to refresh
+       its ARP cache — critical for cold-boot ping-without-arp-d. */
+    if (link_up)
+    {
+      netif_set_up(netif);
+      netif_set_link_up(netif);
+      etharp_gratuitous(netif);
     }
 
   }
