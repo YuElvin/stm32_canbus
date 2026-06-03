@@ -41,6 +41,7 @@ Core/Src/gpio.c \
 Core/Src/freertos.c \
 Core/Src/fdcan.c \
 Core/Src/quadspi.c \
+Core/Src/w25qxx.c \
 Core/Src/sdmmc.c \
 Core/Src/usart.c \
 Core/Src/stm32h7xx_it.c \

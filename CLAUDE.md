@@ -23,7 +23,7 @@ make -j8
 
 - 全量编译：`rm -r -Force build/; make`（make clean 在 Windows 下不可靠）
 - 编译输出在 `CANbus_code/build/`，产物含 `.bin` `.hex` `.elf`
-- **当前 Flash 占用**：约 78KB / 128KB（`-Og` 调试优化）
+- **当前 Flash 占用**：约 81KB / 128KB（`-Og` 调试优化）
 
 ---
 
@@ -84,8 +84,8 @@ Rx 路径：Rx Pool 在 Non-Cacheable 区域，接收无需 Cache 维护。
 
 ```c
 MX_GPIO_Init();
-// MX_FDCAN1_Init();    ← 注释，待阶段 2 恢复
-// MX_QUADSPI_Init();   ← 注释，待阶段 3 恢复
+// MX_FDCAN1_Init();    ← 注释，待阶段 5 恢复
+MX_QUADSPI_Init();      // ← 阶段 3 已启用
 // MX_SDMMC1_SD_Init(); ← 注释，待阶段 4 恢复
 MX_USART2_UART_Init();
 // MX_FATFS_Init();     ← 注释，待阶段 4 恢复
@@ -124,7 +124,7 @@ MX_USART2_UART_Init();
 | `LWIP/Target/ethernetif.c` | PHY BSR 探测全地址+重试、2000ms 延时、SMEMCPY 覆写、EthIf 栈 2048 words、gratuitous ARP、MAC 始终 100M FD 初始化、串口打印 |
 | `LWIP/Target/lwipopts.h` | `SMEMCPY` 覆写为逐字节拷贝、`MEM_SIZE=16KB`、`LWIP_RAM_HEAP_POINTER=0x30005000` |
 | `Core/Src/freertos.c` | defaultTask（LwIP init 后退出）+ heartbeatTask（PE10 心跳） |
-| `Core/Src/main.c` | 注释了 FDCAN/QSPI/SDMMC/FATFS 初始化；加了 vAssertCalled/Error_Handler 打印 |
+| `Core/Src/main.c` | 注释了 FDCAN/SDMMC/FATFS 初始化；QSPI 已启用；加了 vAssertCalled/Error_Handler 打印 |
 | `Core/Inc/main.h` | DBG_LED1/DBG_LED2 引脚宏定义（PE10/PE11） |
 | `Core/Src/stm32h7xx_it.c` | Fault handler 改为打印 PC/LR/CFSR |
 | `Core/Inc/FreeRTOSConfig.h` | `configTOTAL_HEAP_SIZE=32768`；`configASSERT` 改为调用 `vAssertCalled` |
@@ -161,7 +161,8 @@ SWD         : PA13 / PA14
 - [x] tcpip_thread 栈 8KB（解决 ICMP 直接发场景崩溃）
 - [x] MAC 始终 100M FD 初始化（解决 PHY 快照速率误配）
 - [x] ping 192.168.1.88 通（上电/Reset 均 4/4 全通，RTT <1ms）
-- [ ] 后续阶段：FDCAN / QSPI / SDMMC
+- [x] QSPI W25Q128 驱动就绪（JEDEC ID 读取 + 扇区擦写 + 页编程 + 读回校验）
+- [ ] 后续阶段：SDMMC / FDCAN
 
 ---
 

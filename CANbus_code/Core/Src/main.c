@@ -34,6 +34,7 @@
 #include <string.h>
 #include "FreeRTOS.h"
 #include "task.h"
+#include "w25qxx.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -110,12 +111,12 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   /* MX_FDCAN1_Init(); */     /* Disabled for ETH-only test */
-  /* MX_QUADSPI_Init(); */     /* Disabled for ETH-only test */
+  MX_QUADSPI_Init();
   /* MX_SDMMC1_SD_Init(); */   /* Disabled for ETH-only test */
   MX_USART2_UART_Init();
   /* MX_FATFS_Init(); */       /* Disabled for ETH-only test */
   /* USER CODE BEGIN 2 */
-
+  W25QXX_Verify();
   /* USER CODE END 2 */
 
   /* Init scheduler */
