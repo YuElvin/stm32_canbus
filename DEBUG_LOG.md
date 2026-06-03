@@ -1,6 +1,6 @@
 # 调试日志 — STM32H750 + LAN8720 以太网 Ping 验证
 
-> 最后更新：2026-06-03 | 项目阶段：阶段 1（已通过）| 覆盖 commit `7e8ebc3` ~ `bebebe9`
+> 最后更新：2026-06-03 | 项目阶段：阶段 3（QSPI 已通过）| 覆盖 commit `7e8ebc3` ~ `e31b734`
 
 ## 一、目标
 
@@ -588,3 +588,94 @@ ping 192.168.1.88 -S 192.168.1.100
 14. **FreeRTOS + LwIP 栈溢出是崩溃王** —— EthIf/EthLink/tcpip_thread 三个任务均需 ≥8KB 栈。`configCHECK_FOR_STACK_OVERFLOW=2` + `vApplicationStackOverflowHook` 是必备诊断。栈溢出表现随机（queue.c assert / cmsis_os2 assert），根本原因不是队列本身而是 TCB 被写坏
 15. **PHY 自协商期间不要信 MDIO 快照** —— LAN8720 的自协商过程中寄存器值频繁跳变（5→6→1→2）。初始化 MAC 速率应始终用目标值（100M FD），由独立 link 线程在稳定后纠正，不能取瞬时值
 16. **gratuitous ARP 解决 PC ARP 缓存过期** —— 重启后主动广播通告 MAC，避免依赖 PC 侧 `arp -d`。`etharp_gratuitous(netif)` 发 ARP Request（RFC 5227 格式），PC 收到后刷新缓存
+
+---
+
+## 十二、阶段 3 — QSPI W25Q128 验证（commit `64ab1ff` ~ `e31b734`）
+
+> 目标：验证板载 W25Q128（16MB QSPI Flash）读写功能，为后续配置备份和 XIP 做准备。
+
+### 硬件
+
+| 部件 | 说明 |
+|---|---|
+| Flash | W25Q128（板载），QSPI Bank1 |
+| 引脚 | PB2(CLK) PB10(NCS) PD11(IO0) PD12(IO1) PE2(IO2) PD13(IO3) |
+| QSPI 时钟 | HCLK/6 ≈ 33MHz（Prescaler=5，HCLK=200MHz） |
+
+### 验证流程
+
+1. 读 JEDEC ID（期望 `EF 40 18`）
+2. 擦除测试扇区（地址 `0xFF0000`，最后一块 4KB 扇区）
+3. 读回校验（应全 `0xFF`）
+4. 页编程 256 字节（递增 pattern `0x00~0xFF`）
+5. 读回校验（数据一致）
+6. 清理：擦除测试扇区
+
+### 问题 1：扇区擦除超时（HAL_QSPI_AutoPolling）
+
+**现象**：JEDEC ID 读取正确（`EF 40 18`），但 `W25QXX_EraseSector()` 在 `HAL_QSPI_AutoPolling()` 处超时失败。
+
+**串口输出**：
+```
+[QSPI] JEDEC ID: EF 40 18
+[QSPI] JEDEC ID OK
+[QSPI] Erasing sector at 0xFF0000 ... FAIL
+```
+
+**根因**：`W25QXX_WaitBusy()` 中先调 `HAL_QSPI_Command()` 发送 Read Status Register 命令，再调 `HAL_QSPI_AutoPolling()` 用同一命令轮询。但 `HAL_QSPI_AutoPolling()` 内部会自己发送命令，重复调用导致 QSPI 外设状态机冲突（Command 被发两次，第二次 AutoPolling 的首字节响应来自第一次 Command 的残留）。
+
+**修复**：去掉 `HAL_QSPI_AutoPolling` 前的 `HAL_QSPI_Command`，只保留 AutoPolling 本身。
+
+**结果**：仍然失败，输出变为 `BUSY_FAIL`。
+
+### 问题 2：AutoPolling 持续超时
+
+**现象**：修复问题 1 后，擦除仍超时，串口输出 `BUSY_FAIL`。
+
+**根因分析**：`HAL_QSPI_AutoPolling()` 在 STM32H7 HAL 实现中对 QSPI 状态机有隐式依赖——需要前一次操作完全结束（TransferComplete 标志）。当上一步 `HAL_QSPI_Command()` 发送 Sector Erase 命令后，QSPI 外设可能仍处于 Command 发送完成但未清理状态，AutoPolling 启动时状态机冲突。
+
+**最终修复**：完全弃用 `HAL_QSPI_AutoPolling()`，改用手动轮询 `W25QXX_ReadStatusReg1()` + `HAL_GetTick()` 超时检测。
+
+```c
+static HAL_StatusTypeDef W25QXX_WaitBusy(uint32_t timeout_ms)
+{
+  uint32_t tick = HAL_GetTick();
+  uint8_t sr;
+  do {
+    if (W25QXX_ReadStatusReg1(&sr) != HAL_OK)
+      return HAL_ERROR;
+    if ((sr & W25Q_SR_BUSY) == 0)
+      return HAL_OK;
+  } while ((HAL_GetTick() - tick) < timeout_ms);
+  return HAL_TIMEOUT;
+}
+```
+
+### 验证结果（通过）
+
+```
+[QSPI] W25Q128 Verify Start
+[QSPI] JEDEC ID: EF 40 18
+[QSPI] JEDEC ID OK
+[QSPI] Erasing sector at 0xFF0000 ... SR_before=00 SR_after_WREN=02 OK
+[QSPI] Erase verify OK (all 0xFF)
+[QSPI] Programming 256 bytes ... OK
+[QSPI] Program verify OK (256 bytes match)
+[QSPI] W25Q128 Verify Done
+```
+
+| 步骤 | 结果 |
+|---|---|
+| JEDEC ID | `EF 40 18`（W25Q128） |
+| WriteEnable | SR `00→02`，WEL bit 正确置位 |
+| Sector Erase | 成功，BUSY 等待 ~50ms 清除 |
+| Erase Verify | 全 `0xFF` |
+| Page Program | 256 字节写入成功 |
+| Program Verify | 数据完全匹配 |
+
+### 经验总结
+
+17. **HAL_QSPI_AutoPolling 对状态机有隐式依赖** —— 在 STM32H7 上，前一次 Command/Receive 操作完成后外设状态可能未完全清理，直接接 AutoPolling 会冲突。手动轮询 SR1 更可靠
+18. **JEDEC ID 读取是最简单的 QSPI 验证** —— 只需 Instruction + Receive，不涉及 WriteEnable/BUSY/地址，适合第一步验证 QSPI 硬件连接和时钟配置是否正确
+19. **测试地址选最后扇区（0xFF0000）** —— 避免覆盖可能存在的配置数据，验证后自动擦除清理
