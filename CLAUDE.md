@@ -78,7 +78,7 @@ Rx 路径：Rx Pool 在 Non-Cacheable 区域，接收无需 Cache 维护。
 
 - `configTOTAL_HEAP_SIZE = 32768`（32KB）：LwIP + ETH 需要 4 个任务（defaultTask/tcpip_thread/EthIf/EthLink）+ 队列/信号量，15KB 不够。
 - **所有网络任务栈必须 ≥ 2048 words（8KB）**：EthIf、EthLink、tcpip_thread 三个任务。LwIP + HAL ETH 调用链深，4KB 栈在特定路径（PC 直接发 ICMP → etharp_query 排队）会溢出崩溃。
-- 心跳灯（PE7）在独立的 `heartbeatTask`（osPriorityLow）中，与 LwIP 初始化解耦，是系统活体的唯一可靠指示。
+- 心跳灯（PE10，DBG_LED1）在独立的 `heartbeatTask`（osPriorityLow）中，与 LwIP 初始化解耦，是系统活体的唯一可靠指示。PE11（DBG_LED2）空闲，可按需用于各种调试指示。
 
 ### 6. 外设初始化顺序（`main.c`）
 
@@ -123,8 +123,9 @@ MX_USART2_UART_Init();
 | `STM32H750XX_FLASH.ld` | 末尾加了 `.lwip_sec` 段（ETH DMA 描述符强制映射到 D2 SRAM） |
 | `LWIP/Target/ethernetif.c` | PHY BSR 探测全地址+重试、2000ms 延时、SMEMCPY 覆写、EthIf 栈 2048 words、gratuitous ARP、MAC 始终 100M FD 初始化、串口打印 |
 | `LWIP/Target/lwipopts.h` | `SMEMCPY` 覆写为逐字节拷贝、`MEM_SIZE=16KB`、`LWIP_RAM_HEAP_POINTER=0x30005000` |
-| `Core/Src/freertos.c` | defaultTask（LwIP init 后退出）+ heartbeatTask（PE7 心跳） |
+| `Core/Src/freertos.c` | defaultTask（LwIP init 后退出）+ heartbeatTask（PE10 心跳） |
 | `Core/Src/main.c` | 注释了 FDCAN/QSPI/SDMMC/FATFS 初始化；加了 vAssertCalled/Error_Handler 打印 |
+| `Core/Inc/main.h` | DBG_LED1/DBG_LED2 引脚宏定义（PE10/PE11） |
 | `Core/Src/stm32h7xx_it.c` | Fault handler 改为打印 PC/LR/CFSR |
 | `Core/Inc/FreeRTOSConfig.h` | `configTOTAL_HEAP_SIZE=32768`；`configASSERT` 改为调用 `vAssertCalled` |
 | `Middlewares/Third_Party/FatFs/src/option/syscall.c` | 加了 `FreeRTOS.h` / `task.h` include |
@@ -141,6 +142,7 @@ QSPI W25Q128: PB2/PB10/PD11/PD12/PE2/PD13
 SDMMC1 TF卡 : PC8/PC9/PC10/PC11/PC12/PD2
 FDCAN1      : PD0(RX) / PD1(TX)
 继电器      : PE7(Relay1) / PE8(Relay2)  — 高电平触发，上电默认低
+调试LED      : PE10(DBG_LED1) / PE11(DBG_LED2) — 高电平点亮
 USART2      : PD5(TX) / PD6(RX)  — 115200 8N1
 SWD         : PA13 / PA14
 ```

@@ -63,6 +63,10 @@ FDCAN1（一期单路 CAN）
   PE7   Relay1（GPIO 输出，上电默认关）
   PE8   Relay2（GPIO 输出，上电默认关）
 
+调试LED
+  PE10  DBG_LED1（GPIO 输出，心跳 1Hz 闪烁，高电平点亮）
+  PE11  DBG_LED2（GPIO 输出，空闲，按需用于调试指示）
+
 调试
   PD5   USART2_TX → USB-TTL RX
   PD6   USART2_RX ← USB-TTL TX

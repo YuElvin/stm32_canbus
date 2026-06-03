@@ -139,7 +139,7 @@ void StartHeartbeatTask(void *argument)
   /* USER CODE BEGIN StartHeartbeatTask */
   for(;;)
   {
-    HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_7);  /* 1Hz blink = system alive */
+    HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_10); /* 1Hz blink = system alive (DBG_LED1) */
     osDelay(500);
   }
   /* USER CODE END StartHeartbeatTask */

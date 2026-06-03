@@ -59,7 +59,11 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 
 /* USER CODE BEGIN Private defines */
-
+/* Debug LED pins (active high, directly drive external LEDs) */
+#define DBG_LED1_Pin            GPIO_PIN_10
+#define DBG_LED1_GPIO_Port      GPIOE
+#define DBG_LED2_Pin            GPIO_PIN_11
+#define DBG_LED2_GPIO_Port      GPIOE
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus
