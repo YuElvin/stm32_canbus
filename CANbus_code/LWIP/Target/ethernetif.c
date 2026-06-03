@@ -358,41 +358,21 @@ static void low_level_init(struct netif *netif)
     HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
     /* USER CODE END PHY_LINK_CHECK */
 
-    /* Configure MAC speed/duplex based on current PHY state.
-       If link is down, use 100M FD as default — will be updated by
-       ethernet_link_thread when link comes up. */
+    /* Always use 100M FD as initial MAC configuration, regardless of the
+       snapshot PHY link state. During auto-negotiation the PHY reports
+       transient values (5=10M HD, 6=auto-neg, 1=down), and configuring
+       MAC to match a transient state causes speed mismatch → rx=0.
+       ethernet_link_thread will reconfigure once link stabilizes. */
+    duplex = ETH_FULLDUPLEX_MODE;
+    speed = ETH_SPEED_100M;
+
     if(PHYLinkState <= LAN8742_STATUS_LINK_DOWN)
     {
-      duplex = ETH_FULLDUPLEX_MODE;
-      speed = ETH_SPEED_100M;
       netif_set_link_down(netif);
       netif_set_down(netif);
     }
     else
     {
-      switch (PHYLinkState)
-      {
-      case LAN8742_STATUS_100MBITS_FULLDUPLEX:
-        duplex = ETH_FULLDUPLEX_MODE;
-        speed = ETH_SPEED_100M;
-        break;
-      case LAN8742_STATUS_100MBITS_HALFDUPLEX:
-        duplex = ETH_HALFDUPLEX_MODE;
-        speed = ETH_SPEED_100M;
-        break;
-      case LAN8742_STATUS_10MBITS_FULLDUPLEX:
-        duplex = ETH_FULLDUPLEX_MODE;
-        speed = ETH_SPEED_10M;
-        break;
-      case LAN8742_STATUS_10MBITS_HALFDUPLEX:
-        duplex = ETH_HALFDUPLEX_MODE;
-        speed = ETH_SPEED_10M;
-        break;
-      default:
-        duplex = ETH_FULLDUPLEX_MODE;
-        speed = ETH_SPEED_100M;
-        break;
-      }
       link_up = 1;
     }
 
