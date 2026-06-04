@@ -978,3 +978,75 @@ hsd1.Instance->CLKCR &= ~SDMMC_CLKCR_WIDBUS;  // WIDBUS[11:10]=00 → 1-bit
 31. **不要在 4-bit 失败后调 HAL_SD_Init 重新初始化** —— `HAL_SD_Init` 读 CubeMX 的 `hsd1.Init.BusWide`（4-bit）重新配置外设，与仍在 1-bit 的卡不匹配，导致所有后续命令 CRC 失败。CMD0 重置卡也会使已成功的初始化状态丢失
 
 32. **对比官方示例代码是有效的调试手段** —— 对比 ST H743 DEMO 示例的 MPU 配置、sd_diskio 实现、初始化流程，发现了多个当前项目的潜在问题（Cache 一致性、状态判断反转、外设寄存器残留）
+
+---
+
+## 十六、阶段 4 续 — SDMMC 调试第四轮（commit 代码审查）
+
+> 日期：2026-06-05 | 通过逐文件审查 DEBUG_LOG + 源代码，发现严重阻塞性 bug。
+
+### 问题 33：hsd1.Instance 从未设置 → SDMMC 外设完全未初始化（阻塞性 bug）
+
+**现象**：代码审查发现 `main.c` 中 `MX_SDMMC1_SD_Init()` 被注释掉（问题 2 修复），但该函数不仅调用 `HAL_SD_Init()`，还负责：
+1. `hsd1.Instance = SDMMC1`（设置外设基地址）
+2. 内部 `HAL_SD_MspInit()` 初始化 GPIO/时钟/PLL
+
+`hsd1` 作为 BSS 段全局变量零初始化，`hsd1.Instance = 0`（NULL）。
+
+调用链 `f_mount → SD_initialize → BSP_SD_Init → HAL_SD_Init → HAL_SD_MspInit` 中：
+
+```c
+// HAL_SD_MspInit 检查：
+if (sdHandle->Instance == SDMMC1)  // 0 == 0x52007000 → FALSE，跳过全部初始化
+```
+
+**后果**：
+- SDMMC1 时钟未使能
+- GPIO PC8~12/PD2 未配置为 AF12(SDIO1)
+- PLL2 SDMMC 时钟源未配置
+- 随后 `HAL_SD_InitCard()` 中通过 `hsd->Instance` 访问寄存器 → NULL 指针解引用 → HardFault
+
+**为什么之前的"验证通过"没有发现？** 推测验证时 `MX_SDMMC1_SD_Init()` 还处于启用状态（问题 2 的修复可能在测试通过后才提交，或重复初始化在当时恰好能工作）。
+
+**修复**（`main.c`）：
+```c
+// 在 MX_FATFS_Init() 之后、FreeRTOS 调度器启动之前：
+extern SD_HandleTypeDef hsd1;
+hsd1.Instance = SDMMC1;
+hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
+HAL_SD_MspInit(&hsd1);
+```
+
+这样 `HAL_SD_MspInit` 中的 `Instance == SDMMC1` 检查通过，GPIO/时钟/PLL 正常初始化。随后 `BSP_SD_Init()` 调用 `HAL_SD_Init()` 时 `hsd1.State == RESET` 仍为真，会再次调用 `HAL_SD_MspInit`（重复初始化 GPIO 无害），且只执行一次 SD 卡初始化序列。
+
+---
+
+### 问题 34：每次启动都尝试 4-bit 模式然后失败回退
+
+**现象**：`HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B)` 始终 CMD6 CRC 失败，每次启动浪费 ~2 秒在失败回退上。
+
+**修复**（两处）：
+- `main.c`：`hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B`（1 位模式作为默认值）
+- `bsp_driver_sd.c`：4-bit 尝试改为条件执行 `if (...BusWide == SDMMC_BUS_WIDE_4B)`，1-bit 模式直接跳过
+
+日后若修复 4-bit 硬件问题，只需将 `BusWide` 改回 `SDMMC_BUS_WIDE_4B` 即可。
+
+---
+
+### 问题 35：initTestTask 栈 4KB 偏紧
+
+**现象**：`StartInitTestTask` 调用 `W25QXX_Verify()` + `SD_Verify()`，后者有 `char buf[96]` + `ALIGN_32BYTES(uint8_t rd_buf[64])`（64B），加上 FATFS 内部栈消耗和 DMA 回调，4KB 接近上限。
+
+参考 LwIP 调试教训（问题 21、22），栈溢出表现为随机的 queue.c/cmsis_os2.c assert，极难定位。
+
+**修复**：`INIT_TEST_STACK_SIZE` 1024→2048 words（4KB→8KB），与 EthIf/EthLink/tcpip_thread 保持一致。
+
+---
+
+### 经验总结（续）
+
+33. **注释掉 CubeMX 初始化函数时必须补回 HAL_MspInit** —— CubeMX 生成的 `MX_XXX_Init()` 做了两件事：设 Instance + 调 HAL_Init。只注释不补遗，外设 Instance 为 NULL，MspInit 检查失败 → 外设完全不工作
+
+34. **代码审查应该对照 DEBUG_LOG 逐行验证** —— 本次发现的问题是"修复了一个问题后引入了另一个问题"的典型案例。问题 2 说"注释掉 MX_SDMMC1_SD_Init"是正确的方向，但缺少了 Instance 和 MspInit 的补偿步骤
+
+35. **1-bit 模式作为默认比 4-bit 兜底更干净** —— 与其每次让 4-bit 失败后 fallback，不如直接初始化外设时就配成 1-bit。省去失败路径的代码和启动延时，逻辑也简单得多

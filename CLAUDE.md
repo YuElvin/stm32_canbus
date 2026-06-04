@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> 最后更新：2026-06-04 | 项目阶段：阶段 4（SDMMC 调试中）
+> 最后更新：2026-06-05 | 项目阶段：阶段 4（SDMMC 调试中 — 第四轮代码审查修复）
 
 ---
 
@@ -86,7 +86,7 @@ Rx 路径：Rx Pool 在 Non-Cacheable 区域，接收无需 Cache 维护。
 MX_GPIO_Init();
 // MX_FDCAN1_Init();    ← 注释，待阶段 5 恢复
 MX_QUADSPI_Init();      // ← 阶段 3 已启用
-MX_SDMMC1_SD_Init();    // ← 阶段 4 已启用
+// MX_SDMMC1_SD_Init(); ← 注释，FatFs 内部调 BSP_SD_Init；Instance/BusWide/MspInit 在 USER CODE 中手动补回
 MX_USART2_UART_Init();
 MX_FATFS_Init();        // ← 阶段 4 已启用
 // LwIP 在 FreeRTOS 调度启动后由 defaultTask 调用 MX_LWIP_Init()
@@ -123,8 +123,9 @@ MX_FATFS_Init();        // ← 阶段 4 已启用
 | `STM32H750XX_FLASH.ld` | 末尾加了 `.lwip_sec` 段（ETH DMA 描述符强制映射到 D2 SRAM） |
 | `LWIP/Target/ethernetif.c` | PHY BSR 探测全地址+重试、2000ms 延时、SMEMCPY 覆写、EthIf 栈 2048 words、gratuitous ARP、MAC 始终 100M FD 初始化、串口打印 |
 | `LWIP/Target/lwipopts.h` | `SMEMCPY` 覆写为逐字节拷贝、`MEM_SIZE=16KB`、`LWIP_RAM_HEAP_POINTER=0x30005000` |
-| `Core/Src/freertos.c` | defaultTask（LwIP init 后退出）+ heartbeatTask（PE10 心跳） |
-| `Core/Src/main.c` | 注释了 FDCAN 初始化；QSPI/SDMMC/FATFS 已启用；加了 vAssertCalled/Error_Handler 打印 |
+| `Core/Src/freertos.c` | defaultTask（LwIP init 后退出）+ heartbeatTask（PE10 心跳）+ **initTestTask（栈 2048 words，W25QXX+SD verify）** |
+| `Core/Src/main.c` | 注释了 FDCAN 初始化；QSPI/SDMMC/FATFS 已启用；加了 vAssertCalled/Error_Handler 打印；**SDMMC Instance+Init.BusWide=1B+HAL_SD_MspInit 手动调用**（因 MX_SDMMC1_SD_Init 被注释掉，需补回外设初始化） |
+| `FATFS/Target/bsp_driver_sd.c` | **4-bit 改为条件尝试（仅 `BusWide==4B` 时才调 ConfigWideBusOperation）**；UNSUPPORTED_FEATURE 容错处理；卡状态 IDLE/STBY 判为 OK |
 | `Core/Inc/main.h` | DBG_LED1/DBG_LED2 引脚宏定义（PE10/PE11） |
 | `Core/Src/stm32h7xx_it.c` | Fault handler 改为打印 PC/LR/CFSR |
 | `Core/Inc/FreeRTOSConfig.h` | `configTOTAL_HEAP_SIZE=32768`；`configASSERT` 改为调用 `vAssertCalled` |
@@ -164,7 +165,7 @@ SWD         : PA13 / PA14
 - [x] MAC 始终 100M FD 初始化（解决 PHY 快照速率误配）
 - [x] ping 192.168.1.88 通（上电/Reset 均 4/4 全通，RTT <1ms）
 - [x] QSPI W25Q128 驱动就绪（JEDEC ID 读取 + 扇区擦写 + 页编程 + 读回校验）
-- [x] SDMMC + FatFs 驱动就绪（挂载 + 写文件 + 读回校验，1位总线模式，4位模式待排查硬件）
+- [x] SDMMC + FatFs 驱动就绪（挂载 + 写文件 + 读回校验，1位总线模式；**4-bit 硬件问题待排查，默认 1-bit**）
 - [ ] SD 卡检测 PA8 极性确认
 - [ ] 后续阶段：FDCAN
 

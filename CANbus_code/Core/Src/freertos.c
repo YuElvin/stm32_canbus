@@ -36,7 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define INIT_TEST_STACK_SIZE (1024 * 4)
+#define INIT_TEST_STACK_SIZE (2048 * 4)  /* 8KB: W25QXX+SD verify with FATFS stack */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/

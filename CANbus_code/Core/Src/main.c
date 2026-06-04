@@ -117,6 +117,17 @@ int main(void)
   MX_USART2_UART_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
+  /* MX_SDMMC1_SD_Init() is commented out to avoid duplicate HAL_SD_Init() call
+     (FatFs calls BSP_SD_Init internally). But we still need to set Instance
+     and call MspInit so that SDMMC GPIO/clock/PLL are configured. Without
+     this, HAL_SD_MspInit's Instance==SDMMC1 check fails and the peripheral
+     is left unpowered → NULL pointer dereference in HAL_SD_InitCard.
+     Also override BusWide to 1B: 4-bit mode CMD6 always fails on this board
+     (D3/PC11 or CMD/PD2 signal quality issue), falling back wastes ~2s every boot. */
+  extern SD_HandleTypeDef hsd1;
+  hsd1.Instance = SDMMC1;
+  hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
+  HAL_SD_MspInit(&hsd1);
   SD_Detect_GPIO_Init();
   /* SD_Verify() must run after FreeRTOS scheduler starts (sd_diskio uses
      RTOS message queue for DMA completion). Moved to a task in freertos.c. */

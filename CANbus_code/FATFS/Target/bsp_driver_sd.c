@@ -80,8 +80,11 @@ __weak uint8_t BSP_SD_Init(void)
   }
   /* USER CODE END BSP_SD_Init_AfterHAL */
 
-  /* Configure SD Bus width (4 bits mode selected) */
-  if (sd_state == MSD_OK)
+  /* Configure SD Bus width. Only attempt wide bus if Init says so.
+     On this board 4-bit CMD6 always fails (PC11/D3 signal quality),
+     so we default to 1-bit. If 4-bit is ever fixed, change BusWide in
+     main.c or sdmmc.c MX_SDMMC1_SD_Init. */
+  if (sd_state == MSD_OK && hsd1.Init.BusWide == SDMMC_BUS_WIDE_4B)
   {
     extern UART_HandleTypeDef huart2;
     char msg[80];
@@ -90,7 +93,7 @@ __weak uint8_t BSP_SD_Init(void)
     ret4 = HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B);
     if (ret4 != HAL_OK)
     {
-      snprintf(msg, sizeof(msg), "\r\n[SD] 4-bit bus failed (err=0x%lX), using 1-bit\r\n",
+      snprintf(msg, sizeof(msg), "\r\n[SD] 4-bit bus failed (err=0x%lX), falling back to 1-bit\r\n",
                (unsigned long)hsd1.ErrorCode);
       HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
       /* ConfigWideBusOperation sets peripheral to 4-bit BEFORE sending CMD6.
