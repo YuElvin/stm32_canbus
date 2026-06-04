@@ -212,6 +212,19 @@ SECTIONS
     *(.Rx_PoolSection)
   } >RAM_D2
 
+  /* SD card FS object and DMA scratch buffers must be in D2 SRAM.
+     DTCM (0x20000000) is NOT accessible by SDMMC IDMA (AXI bus).
+     Placed after Rx_PoolSection, before LwIP heap. */
+  .sd_sec (NOLOAD) :
+  {
+    . = ABSOLUTE(0x30004C00);
+    *(.SDFileSystem)
+    . = ALIGN(32);
+    *(.sd_scratch)
+    . = ALIGN(32);
+    *(.sd_buffer)
+  } >RAM_D2
+
   /* Remove information from the standard libraries */
   /DISCARD/ :
   {

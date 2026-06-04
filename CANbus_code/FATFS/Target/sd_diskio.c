@@ -84,15 +84,15 @@ See BSP_SD_ErrorCallback() and BSP_SD_AbortCallback() below
 * transfer data
 */
 /* USER CODE BEGIN enableScratchBuffer */
-/* #define ENABLE_SCRATCH_BUFFER */
+#define ENABLE_SCRATCH_BUFFER
 /* USER CODE END enableScratchBuffer */
 
 /* Private variables ---------------------------------------------------------*/
 #if defined(ENABLE_SCRATCH_BUFFER)
 #if defined (ENABLE_SD_DMA_CACHE_MAINTENANCE)
-ALIGN_32BYTES(static uint8_t scratch[BLOCKSIZE]); // 32-Byte aligned for cache maintenance
+ALIGN_32BYTES(static uint8_t scratch[BLOCKSIZE]) __attribute__((section(".sd_scratch"))); // D2 SRAM for DMA
 #else
-__ALIGN_BEGIN static uint8_t scratch[BLOCKSIZE] __ALIGN_END;
+__ALIGN_BEGIN static uint8_t scratch[BLOCKSIZE] __ALIGN_END __attribute__((section(".sd_scratch")));
 #endif
 #endif
 /* Disk status */

@@ -23,7 +23,7 @@ uint8_t SD_Verify(void)
   DWORD fre_clust, fre_sect, tot_sect;
   const char *test_path = "test.txt";
   const char *test_data = "STM32H750 SDMMC FatFs verify OK\r\n";
-  ALIGN_32BYTES(uint8_t rd_buf[64]);
+  ALIGN_32BYTES(static uint8_t rd_buf[64]) __attribute__((section(".sd_buffer")));
   uint8_t pass = 1;
 
   sd_print("\r\n[SD] TF Card Verify Start\r\n");

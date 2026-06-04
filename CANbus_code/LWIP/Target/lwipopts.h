@@ -63,7 +63,7 @@
    12 * RxBuff_t ~18.9KB, pool ends ~0x30004B90.
    Heap must start AFTER the pool. 0x30005000 gives safe margin.
    MEM_SIZE: LwIP internal heap for pbuf/TCP buffers (in D2 SRAM, non-cacheable). */
-#define LWIP_RAM_HEAP_POINTER 0x30005000
+#define LWIP_RAM_HEAP_POINTER 0x30005100
 #define MEM_SIZE              (16 * 1024)
 /*----- Value supported for H7 devices: 1 -----*/
 #define LWIP_SUPPORT_CUSTOM_PBUF 1
