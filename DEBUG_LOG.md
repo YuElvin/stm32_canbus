@@ -1050,3 +1050,60 @@ HAL_SD_MspInit(&hsd1);
 34. **代码审查应该对照 DEBUG_LOG 逐行验证** —— 本次发现的问题是"修复了一个问题后引入了另一个问题"的典型案例。问题 2 说"注释掉 MX_SDMMC1_SD_Init"是正确的方向，但缺少了 Instance 和 MspInit 的补偿步骤
 
 35. **1-bit 模式作为默认比 4-bit 兜底更干净** —— 与其每次让 4-bit 失败后 fallback，不如直接初始化外设时就配成 1-bit。省去失败路径的代码和启动延时，逻辑也简单得多
+
+---
+
+## 十七、阶段 4 续 — SDMMC 调试第五轮（串口日志诊断）
+
+> 日期：2026-06-05 | 通过上电 + Reset 两次串口日志诊断 SD 挂载失败。
+
+### 问题 36：SDMMC1 中断未使能 → DMA 完成回调永不触发 → 读取 30s 超时
+
+**现象**（两次启动完全一致）：
+
+```
+[SD] HAL_SD_Init: ret=0 state=1 err=0x0    ← 初始化成功！(ret=MSD_OK, state=READY)
+... 恰好 30 秒 ...
+[SD] FAIL: f_mount error 1                   ← FR_DISK_ERR
+[SD] HAL SD state=3                          ← HAL_SD_STATE_BUSY
+```
+
+HAL_SD_Init 成功（`ret=0, err=0`）证明问题 33 的 Instance 修复生效，外设初始化正常。
+
+30 秒恰好是 `sd_diskio.c` 的 `SD_TIMEOUT`（30*1000ms）。说明 `SD_read` 中 `osMessageQueueGet` 超时。
+
+调用链：`HAL_SD_ReadBlocks_DMA → DMA 完成 → 触发 SDMMC1_IRQn → SDMMC1_IRQHandler → HAL_SD_IRQHandler → HAL_SD_RxCpltCallback → BSP_SD_ReadCpltCallback → osMessageQueuePut(READ_CPLT_MSG)`
+
+**根因**：`HAL_SD_MspInit`（sdmmc.c）配置了 SDMMC 的时钟和 GPIO，但**没有配置 NVIC**。SDMMC1_IRQn 未使能，DMA 完成中断永远不被 CPU 响应。同时 `stm32h7xx_it.c` 也没有定义 `SDMMC1_IRQHandler` override。
+
+默认的 weak `Default_Handler` 只是一个死循环，不会调用 `HAL_SD_IRQHandler`。
+
+**修复**（两处）：
+
+1. `sdmmc.c` `HAL_SD_MspInit`：添加 NVIC 配置
+   ```c
+   HAL_NVIC_SetPriority(SDMMC1_IRQn, 6, 0);
+   HAL_NVIC_EnableIRQ(SDMMC1_IRQn);
+   ```
+   优先级 6 与 ETH_IRQn 一致（>5 = 不调用 FreeRTOS API 安全）。
+
+2. `stm32h7xx_it.c`：添加 `SDMMC1_IRQHandler`
+   ```c
+   void SDMMC1_IRQHandler(void)
+   {
+     extern SD_HandleTypeDef hsd1;
+     HAL_SD_IRQHandler(&hsd1);
+   }
+   ```
+
+---
+
+### 经验总结（续）
+
+36. **CubeMX 启用 SDMMC 后会生成 NVIC 配置 + IRQHandler** —— 但这两个分别在 `sdmmc.c`（MspInit 内）和 `stm32h7xx_it.c`。是 CubeMX 生成它们，不是手动写的。项目中这两个文件被注释/未生成，需要手动补上。
+
+37. **SD 卡挂载失败先看超时时间** —— 30 秒超时恰好匹配 `SD_TIMEOUT`，说明是 DMA 完成通知没来，而非卡不响应。如果是卡通信问题，命令/响应阶段就会失败，不会等到 read DMA 阶段。
+
+38. **中断优先级 6 是最低安全值** —— `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5`，优先级 6 的中断不调用 FreeRTOS API 是安全的。但 `BSP_SD_ReadCpltCallback` 内部调用了 `osMessageQueuePut`（FreeRTOS API）—— 因为 SDMMC 中断优先级 6 > 5，在 STM32 的 4-bit 优先级编码下（数值大=低优先级），6 < 5（逻辑优先级）→ 实际上它在 FreeRTOS 安全区域内...
+
+   更正：STM32 使用 4-bit 优先级（16 级），数值越大优先级越低。`configMAX_SYSCALL_INTERRUPT_PRIORITY=5<<4=80`。优先级 6<<4=96，96>80，数值更大的优先级更低 → 安全，可以调用 FreeRTOS API。
