@@ -1107,3 +1107,100 @@ HAL_SD_Init 成功（`ret=0, err=0`）证明问题 33 的 Instance 修复生效�
 38. **中断优先级 6 是最低安全值** —— `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5`，优先级 6 的中断不调用 FreeRTOS API 是安全的。但 `BSP_SD_ReadCpltCallback` 内部调用了 `osMessageQueuePut`（FreeRTOS API）—— 因为 SDMMC 中断优先级 6 > 5，在 STM32 的 4-bit 优先级编码下（数值大=低优先级），6 < 5（逻辑优先级）→ 实际上它在 FreeRTOS 安全区域内...
 
    更正：STM32 使用 4-bit 优先级（16 级），数值越大优先级越低。`configMAX_SYSCALL_INTERRUPT_PRIORITY=5<<4=80`。优先级 6<<4=96，96>80，数值更大的优先级更低 → 安全，可以调用 FreeRTOS API。
+
+---
+
+## 十八、阶段 4 续 — SDMMC 调试第六轮（HardFault 诊断）
+
+> 日期：2026-06-05 | NVIC 修复后出现 IMPRECISERR HardFault，心跳灯灭。
+
+### 问题 37：所有 .bss 全局变量在 DTCM → SDMMC IDMA 无法访问 → HardFault
+
+**现象**（两次启动完全一致）：
+
+```
+[SD] HAL_SD_Init: ret=0 state=1 err=0x0    ← 初始化成功
+[HARDFAULT] PC=0x080016DE LR=0x0800774B
+  CFSR=0x00000400 HFSR=0x40000000
+```
+
+- CFSR=0x00000400 → BFSR.IMPRECISERR=1（不精确总线错误）
+- HFSR=0x40000000 → FORCED=1（由 BusFault 升级为 HardFault）
+- **心跳灯灭** → HardFault handler 死循环，heartbeatTask（osPriorityLow）被饿死
+
+**addr2line 定位**：
+| 地址 | 函数 | 分析 |
+|---|---|---|
+| PC=0x080016DE | `SD_read` (offset 0x32) | `SCB_CleanDCache_by_Addr` 循环中 |
+| LR=0x0800774B | `SD_SendStatus` 附近 | `HAL_SD_GetCardStatus` 调用链 |
+
+PC 落在 Cache Clean 代码中，但 **IMPRECISERR 意味着真正肇事指令是一条更早的 store**。CPU 写缓冲延迟了异常上报。
+
+**逐层排查**：
+
+1. **怀疑 Cache Clean** → 对比反汇编发现循环是标准 CMSIS `SCB_CleanDCache_by_Addr`（写 DCCMVAC），应永不 fault
+2. **怀疑 NVIC 中断干扰** → `HAL_SD_Init` 使用轮询模式，SDMMC->MASK 已清零，不会产生中断
+3. **检查 .map 文件** → 发现关键问题：
+
+```
+.bss.SDFatFS   0x20000304    ← DTCM (0x20000000)!
+.bss.ucHeap    0x20002648    ← FreeRTOS 堆也在 DTCM!
+.bss.hsd1      0x200001A4    ← HAL SD handle 在 DTCM!
+```
+
+**根因**：链接脚本将所有 `.bss` / `.data` 放在 DTCM。**DTCM 是 Cortex-M7 CPU 私有 Tightly Coupled Memory，不挂在 AXI 总线上**。SDMMC 的内部 DMA（IDMA）走 AXI 总线访问内存，**完全无法读写 DTCM**。
+
+当 `f_mount` → `find_volume` → `disk_read(0, fs->win, 0, 1)` 把 `fs->win`（DTCM 地址）传给 SDMMC IDMA 时：
+- IDMA 尝试通过 AXI 写 DTCM → **总线错误** → IMPRECISERR → HardFault
+
+这同时解释了上一版日志的 `ERROR_RX_OVERRUN`（FIFO 溢出）：IDMA 写不进去 → FIFO 堆积 → 溢出。
+
+**为什么 HAL_SD_Init 不崩？** 因为 HAL_SD_Init 全程使用轮询模式（CPU 直接读写 SDMMC 寄存器），不经过 IDMA。只有 `SD_read` 的 `HAL_SD_ReadBlocks_DMA` 才启动 IDMA。
+
+**修复**（6 处改动，commit `606f47e`）：
+
+| 文件 | 修改 |
+|---|---|
+| `STM32H750XX_FLASH.ld` | 新增 `.sd_sec` 段，映射到 D2 SRAM，包含 `.SDFileSystem`、`.sd_scratch`、`.sd_buffer` |
+| `lwipopts.h` | `LWIP_RAM_HEAP_POINTER` 0x30005000→0x30005100（为 sd_sec 让出空间） |
+| `fatfs.c` | `SDFatFS` 加 `__attribute__((section(".SDFileSystem")))` |
+| `sd_diskio.c` | 启用 `ENABLE_SCRATCH_BUFFER`；`scratch[]` 加 section 属性 |
+| `sd_diskio.c` | DMA 读前加 `SCB_CleanDCache_by_Addr`（保留上一轮修复） |
+| `sd_verify.c` | `rd_buf` 从栈变量改为 static + section 属性 |
+
+修复后的 D2 SRAM 布局：
+
+```
+.lwip_sec       0x30000000 ~ 0x30004B03  ETH DMA 描述符 + Rx Pool (~18.8KB)
+.sd_sec         0x30004B20 ~ 0x3000507F  SD 卡 DMA 缓冲区 (~1.3KB)
+  ├ SDFatFS     0x30004C00 (568B)        FatFs 文件系统对象（含 win[512]）
+  ├ scratch[]   0x30004E40 (512B)        DMA 中转缓冲
+  └ rd_buf[]    0x30005040 (64B)         SD 验证读缓冲
+LwIP Heap       0x30005100 ~ 0x300090FF  pbuf/TCP 缓冲区 (16KB)
+```
+
+---
+
+### 问题 38：Cache Clean 导致的 SCB_CleanDCache_by_Addr 问题（已撤回分析）
+
+在定位问题 37 时，曾怀疑 `SCB_CleanDCache_by_Addr` 操作导致 HardFault。反汇编分析确认代码正确（标准 CMSIS DCCMVAC 循环），但 DTCM 地址传给 IDMA 才是真正的故障源。
+
+**Cache Clean 代码保留**：对于 DMA 读操作，在 DMA 启动前 Clean（写回脏行）、DMA 完成后 Invalidate（丢弃旧缓存行）是正确的做法。DTCM 修复后 Cache Clean 不再是故障点，保留作为 Cache 一致性的安全网。
+
+---
+
+### 经验总结（续）
+
+39. **DTCM 不能用于 DMA 缓冲区** —— STM32H7 的 DTCM（0x20000000）是 CPU 私有 TCM 内存，不挂在 AXI 总线上。任何 DMA（ETH/SDMMC/QSPI/MDMA）都无法访问。链接脚本将 .bss 默认放 DTCM 是 CubeMX 的默认行为，对不涉及 DMA 的变量没问题，但 FatFs/DMA 相关缓冲区必须显式放到 D2 或 AXI SRAM。
+
+40. **IMPRECISERR 的调试策略** —— 不精确总线错误意味着 PC 不是肇事指令。排查步骤：
+    1. `addr2line` 定位 PC → 找到当前函数上下文
+    2. 检查 CFSR 精确异常类型（PRECISERR vs IMPRECISERR）
+    3. IMPRECISERR → 向上追溯最近的 store/DMA 操作
+    4. **检查 .map 文件**确认相关缓冲区的物理地址 → 本次问题由此定位
+    5. 常见原因：DMA 写 DTCM、写禁能外设地址、MPU 权限错误
+
+41. **ENABLE_SCRATCH_BUFFER 是 DMA+Cache 场景的最佳实践** —— 将 DMA 目标缓冲与用户缓冲通过 scratch buffer 隔离：DMA 永远读写 scratch（D2 SRAM），完成后 memcpy 到用户缓冲（可在任意内存）。这样做的好处：
+    - 用户缓冲地址不受限制（DTCM/栈/堆都行）
+    - Cache 维护只需针对 scratch（固定地址，方便管理）
+    - ST H743 DEMO 示例代码也推荐此模式

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> 最后更新：2026-06-05 | 项目阶段：阶段 4（SDMMC 调试中 — 第四轮代码审查修复）
+> 最后更新：2026-06-05 | 项目阶段：阶段 4（SDMMC 调试中 — 第六轮 DTCM HardFault 修复）
 
 ---
 
@@ -36,8 +36,9 @@ make -j8
 
 | 区域 | 基地址 | 大小 | MPU 属性 | 用途 |
 |---|---|---|---|---|
-| D2 SRAM | 0x30000000 | 256KB | Non-Cacheable, Bufferable | DMA 描述符 + Rx Pool + LwIP Heap |
+| D2 SRAM | 0x30000000 | 256KB | Non-Cacheable, Bufferable | DMA 描述符 + Rx Pool + SD 缓冲 + LwIP Heap |
 | AXI SRAM | 0x24000000 | 512KB | Cacheable | 代码/数据/pbuf payload |
+| DTCM | 0x20000000 | 128KB | —（CPU 私有） | 全局变量/FreeRTOS 堆/任务栈（**DMA 不可访问**） |
 
 Tx 路径：`HAL_ETH_Transmit_IT` 零拷贝，pbuf payload 在 Cacheable 区域，DMA 直接读取。
 Rx 路径：Rx Pool 在 Non-Cacheable 区域，接收无需 Cache 维护。
@@ -48,12 +49,15 @@ Rx 路径：Rx Pool 在 Non-Cacheable 区域，接收无需 Cache 维护。
 
 ```
 0x30000000 ~ 0x3000005F  DMARxDscrTab   (4×24B Rx 描述符)
-0x30000080 ~ 0x300000DF  DMATxDscrTab   (4×24B Tx 描述符)
-0x30000100 ~ 0x30004A83  Rx_PoolSection (12×RxBuff_t ≈18.3KB)
-0x30005000 ~             LWIP_RAM_HEAP  (MEM_SIZE=16KB)
+0x30000100 ~ 0x3000015F  DMATxDscrTab   (4×24B Tx 描述符)
+0x30000180 ~ 0x30004B03  Rx_PoolSection (12×RxBuff_t ≈18.3KB)
+0x30004C00 ~ 0x3000507F  .sd_sec        (SDFatFS 568B + scratch 512B + rd_buf 64B)
+0x30005100 ~             LWIP_RAM_HEAP  (MEM_SIZE=16KB)
 ```
 
-`LWIP_RAM_HEAP_POINTER` 必须在 Rx_PoolSection 结束地址之后。修改 `ETH_RX_BUFFER_CNT` 或 `ETH_RX_BUFFER_SIZE` 后，必须重新检查 `.map` 文件确认 pool 实际结束地址，再调整堆起点。
+**`.sd_sec` 段**：SD 卡 DMA 缓冲区必须放在 D2 SRAM，因为 **DTCM（0x20000000）是 CPU 私有 TCM 内存，SDMMC IDMA 走 AXI 总线无法访问**。链接脚本默认将所有 .bss 放 DTCM，所以 SDFatFS/scratch 必须通过 section attribute 显式重定位。
+
+`LWIP_RAM_HEAP_POINTER` 必须在 .sd_sec 结束地址之后。修改 `ETH_RX_BUFFER_CNT`/`ETH_RX_BUFFER_SIZE` 或调整 SD 缓冲区大小后，必须重新检查 `.map` 文件确认各段实际结束地址。
 
 ### 3. LwIP 必须配置的参数（lwipopts.h）
 
@@ -120,12 +124,15 @@ MX_FATFS_Init();        // ← 阶段 4 已启用
 
 | 文件 | 修改内容 |
 |---|---|
-| `STM32H750XX_FLASH.ld` | 末尾加了 `.lwip_sec` 段（ETH DMA 描述符强制映射到 D2 SRAM） |
+| `STM32H750XX_FLASH.ld` | 末尾加了 `.lwip_sec` 段（ETH DMA 描述符强制映射到 D2 SRAM）；**加了 `.sd_sec` 段（SD DMA 缓冲区强制映射到 D2 SRAM，因 DTCM 不可被 IDMA 访问）** |
 | `LWIP/Target/ethernetif.c` | PHY BSR 探测全地址+重试、2000ms 延时、SMEMCPY 覆写、EthIf 栈 2048 words、gratuitous ARP、MAC 始终 100M FD 初始化、串口打印 |
-| `LWIP/Target/lwipopts.h` | `SMEMCPY` 覆写为逐字节拷贝、`MEM_SIZE=16KB`、`LWIP_RAM_HEAP_POINTER=0x30005000` |
+| `LWIP/Target/lwipopts.h` | `SMEMCPY` 覆写为逐字节拷贝、`MEM_SIZE=16KB`、`LWIP_RAM_HEAP_POINTER=0x30005100`（上移256B为 .sd_sec 让空间） |
 | `Core/Src/freertos.c` | defaultTask（LwIP init 后退出）+ heartbeatTask（PE10 心跳）+ **initTestTask（栈 2048 words，W25QXX+SD verify）** |
 | `Core/Src/main.c` | 注释了 FDCAN 初始化；QSPI/SDMMC/FATFS 已启用；加了 vAssertCalled/Error_Handler 打印；**SDMMC Instance+Init.BusWide=1B+HAL_SD_MspInit 手动调用**（因 MX_SDMMC1_SD_Init 被注释掉，需补回外设初始化） |
 | `FATFS/Target/bsp_driver_sd.c` | **4-bit 改为条件尝试（仅 `BusWide==4B` 时才调 ConfigWideBusOperation）**；UNSUPPORTED_FEATURE 容错处理；卡状态 IDLE/STBY 判为 OK |
+| `FATFS/Target/sd_diskio.c` | **启用 ENABLE_SCRATCH_BUFFER**（DMA 通过 D2 scratch 中转，隔离 DTCM 用户缓冲区）；scratch[] 放入 .sd_scratch 段；DMA 读前加 Cache Clean；DMA 读后 Invalidate |
+| `FATFS/App/fatfs.c` | **`SDFatFS` 加 section(".SDFileSystem")** 强制放 D2 SRAM（DTCM 不可被 SDMMC IDMA 访问） |
+| `Core/Src/sd_verify.c` | **`rd_buf` 从栈变量改为 static + section(".sd_buffer")** 放 D2 SRAM |
 | `Core/Inc/main.h` | DBG_LED1/DBG_LED2 引脚宏定义（PE10/PE11） |
 | `Core/Src/stm32h7xx_it.c` | Fault handler 改为打印 PC/LR/CFSR |
 | `Core/Inc/FreeRTOSConfig.h` | `configTOTAL_HEAP_SIZE=32768`；`configASSERT` 改为调用 `vAssertCalled` |
