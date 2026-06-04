@@ -93,9 +93,11 @@ __weak uint8_t BSP_SD_Init(void)
       snprintf(msg, sizeof(msg), "\r\n[SD] 4-bit bus failed (err=0x%lX), using 1-bit\r\n",
                (unsigned long)hsd1.ErrorCode);
       HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 200);
-      /* Do NOT reinitialize — HAL_SD_Init already configured 1-bit mode.
-         Reinitializing (CMD0 reset) corrupts the card state and causes
-         all subsequent commands to fail with CMD_CRC_FAIL. */
+      /* ConfigWideBusOperation sets peripheral to 4-bit BEFORE sending CMD6.
+         When CMD6 fails, peripheral stays at 4-bit while card stays at 1-bit.
+         Restore SDMMC peripheral bus width to 1-bit via CLKCR register
+         (WIDBUS bits [11:10]: 00=1-bit, 10=4-bit). */
+      hsd1.Instance->CLKCR &= ~SDMMC_CLKCR_WIDBUS;
       hsd1.ErrorCode = HAL_SD_ERROR_NONE;
     }
     else
