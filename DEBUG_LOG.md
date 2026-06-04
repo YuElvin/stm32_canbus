@@ -845,3 +845,136 @@ static HAL_StatusTypeDef W25QXX_WaitBusy(uint32_t timeout_ms)
 26. **STM32H7 HAL 的 SD_ERROR_UNSUPPORTED_FEATURE 是可恢复的** —— 部分 SD 卡初始化时 HAL 会标记此错误但卡已就绪（State=READY）。BSP 层应检查 State 而非仅依赖返回值。
 
 27. **4 位总线切换失败应降级为 1 位** —— CMD 或 D3 信号质量差会导致 CRC 失败。1 位模式（仅 D0）对布线要求低得多，作为软降级方案可保证基本功能。排查时优先检查 D3（PC11）和 CMD（PD2）的焊接/接线。
+
+---
+
+## 十五、阶段 4 续 — SDMMC 调试第三轮（commit `200bc2c` ~ `43d71ae`）
+
+> 目标：参考 ST H743 DEMO 示例代码修复 SD 卡挂载失败问题。
+
+### 参考代码
+
+ST 官方 `H743-DEMO2/Applications/FatFs/FatFs_uSD_DMA_RTOS` 示例。
+
+### 问题 28：SD DMA 与 D-Cache 一致性（潜在问题）
+
+**现象**：SD 验证已通过，但对比示例代码发现 MPU 配置差异。
+
+**分析**：
+| 项目 | 示例代码 | 当前项目 |
+|---|---|---|
+| MPU 0x24000000 | Non-Cacheable | Cacheable |
+| DMA Cache 维护 | 禁用（因 MPU NC） | 未启用 |
+
+当前项目 MPU 将 AXI SRAM 配置为 Cacheable，但 SD DMA 读写缓冲区（FreeRTOS 堆分配）在该区域。小数据传输碰巧成功，大数据传输可能读到脏缓存数据。
+
+**修复**（`200bc2c`）：
+- `sd_diskio.c`：启用 `ENABLE_SD_DMA_CACHE_MAINTENANCE=1`，读操作后 `SCB_InvalidateDCache_by_Addr`，写操作前 `SCB_CleanDCache_by_Addr`
+- `sd_verify.c`：读缓冲区改用 `ALIGN_32BYTES` 对齐（Cache 行 32 字节）
+
+**Flash 增量**：96 字节（99912→100008）
+
+---
+
+### 问题 29：BSP_SD_GetCardState() 状态判断反转（根本原因）
+
+**现象**：`f_mount` 返回 error 3（FR_NOT_READY），`HAL SD state=1 error=0`。
+
+**串口输出**：
+```
+[SD] HAL_SD_Init: ret=1 state=1 err=0x80000000
+[SD] UNSUPPORTED_FEATURE cleared
+[SD] FAIL: f_mount error 3
+[SD] HAL SD state=1 error=0
+```
+
+**根因**：`BSP_SD_GetCardState()` 逻辑反转。
+
+```c
+// 旧代码：只认 TRANSFER(1) 为 OK
+return (state == HAL_SD_CARD_TRANSFER) ? SD_TRANSFER_OK : SD_TRANSFER_BUSY;
+```
+
+SD 卡状态机：初始化完成后卡处于 IDLE(0) 或 STBY(2)，不是 TRANSFER(1)。旧代码把 IDLE 判为 BUSY → `SD_CheckStatus()` 返回 `STA_NOINIT` → `f_mount` 报 FR_NOT_READY。
+
+**修复**（`3da8f7f`）：
+```c
+// 新代码：SENDING/RECEIVING/PROGRAMMING 为 BUSY，其余为 OK
+if (card_state == HAL_SD_CARD_SENDING  ||
+    card_state == HAL_SD_CARD_RECEIVING ||
+    card_state == HAL_SD_CARD_PROGRAMMING)
+  return SD_TRANSFER_BUSY;
+return SD_TRANSFER_OK;
+```
+
+---
+
+### 问题 30：4 位总线失败后 SDMMC 外设状态残留（根本原因之二）
+
+**现象**：4-bit 失败后回退 1-bit 也失败，两次都报 CMD_CRC_FAIL (0x01)。
+
+**串口输出**：
+```
+[SD] HAL_SD_Init: ret=1 state=1 err=0x80000000
+[SD] Trying 4-bit bus...
+[SD] 4-bit result: ret=1 err=0x1
+[SD] Reinit + 1-bit fallback...
+[SD] 1-bit result: ret=1 err=0x1
+```
+
+**根因分析**：
+
+`HAL_SD_ConfigWideBusOperation()` 内部执行顺序：
+1. **先** 将 SDMMC 外设切到 4-bit（写 `CLKCR.WIDBUS=10`）
+2. **再** 发 CMD6 给卡要求切总线宽度
+3. CMD6 CRC 失败 → 返回 HAL_ERROR
+
+结果：**外设 4-bit，卡 1-bit，不匹配！**
+
+后续 `f_mount` → `SD_read` → DMA 用 4-bit 外设读 1-bit 卡 → DMA 错误 (0x02000000)。
+
+**尝试的修复及失败原因**：
+
+| 尝试 | 结果 | 原因 |
+|---|---|---|
+| `HAL_SD_Init()` 重新初始化后切 1-bit | 1-bit 也 CRC 失败 | CMD0 重置卡后重新初始化序列异常 |
+| 不做任何恢复直接用 | DMA 错误 0x02000000 | 外设 4-bit 卡 1-bit 不匹配 |
+
+**最终修复**（`43d71ae`）：4-bit 失败后直接写 `SDMMC_CLKCR` 寄存器恢复外设为 1-bit：
+
+```c
+hsd1.Instance->CLKCR &= ~SDMMC_CLKCR_WIDBUS;  // WIDBUS[11:10]=00 → 1-bit
+```
+
+---
+
+### 问题 31：HAL_SD_Init 重新初始化导致后续通信全部 CRC 失败
+
+**现象**：4-bit 失败后调 `HAL_SD_Init()` 重新初始化，再切 1-bit，1-bit 也报 CMD_CRC_FAIL。
+
+**串口输出**：
+```
+[SD] 4-bit result: ret=1 err=0x1
+[SD] Reinit + 1-bit fallback...
+[SD] 1-bit result: ret=1 err=0x1    ← 1.9 秒后超时
+```
+
+**分析**：`HAL_SD_Init()` 发 CMD0 重置卡到 IDLE 状态，然后重新走整个初始化序列（CMD8→ACMD41→CMD2→CMD3→CMD9）。但重新初始化后 SDMMC 外设与卡的通信状态异常，CMD13 轮询全部 CRC 失败。
+
+**根因**：`HAL_SD_Init` 的 `SDMMC_Init()` 将外设重新配置为 4-bit（从 CubeMX 的 `hsd1.Init.BusWide` 读取），而卡因 CMD6 失败仍在 1-bit 模式。外设/卡总线宽度不匹配导致所有后续命令 CRC 失败。
+
+**结论**：**不要在 4-bit 失败后调 `HAL_SD_Init` 重新初始化**。正确做法是只恢复外设总线宽度寄存器。
+
+---
+
+### 经验总结（续）
+
+28. **STM32H7 SD DMA 必须考虑 D-Cache 一致性** —— AXI SRAM 是 Cacheable 的，DMA 缓冲区需要用 `ALIGN_32BYTES` 对齐，读操作后 `SCB_InvalidateDCache_by_Addr`，写操作前 `SCB_CleanDCache_by_Addr`。或者将缓冲区所在 MPU 区域设为 Non-Cacheable（如 H743 DEMO 示例的做法）
+
+29. **BSP_SD_GetCardState() 必须正确处理 IDLE 状态** —— SD 卡初始化完成后处于 IDLE(0) 或 STBY(2)，不是 TRANSFER(1)。判断"卡忙"应该检查 SENDING/RECEIVING/PROGRAMMING，而不是只认 TRANSFER 为 OK。这是 CubeMX BSP 模板的一个常见陷阱
+
+30. **HAL_SD_ConfigWideBusOperation 是"先改外设后改卡"** —— 内部先写 SDMMC CLKCR 寄存器切外设总线宽度，再发 CMD6 给卡。CMD6 失败时外设已经改了但卡没改，导致不匹配。修复必须手动恢复外设寄存器
+
+31. **不要在 4-bit 失败后调 HAL_SD_Init 重新初始化** —— `HAL_SD_Init` 读 CubeMX 的 `hsd1.Init.BusWide`（4-bit）重新配置外设，与仍在 1-bit 的卡不匹配，导致所有后续命令 CRC 失败。CMD0 重置卡也会使已成功的初始化状态丢失
+
+32. **对比官方示例代码是有效的调试手段** —— 对比 ST H743 DEMO 示例的 MPU 配置、sd_diskio 实现、初始化流程，发现了多个当前项目的潜在问题（Cache 一致性、状态判断反转、外设寄存器残留）
