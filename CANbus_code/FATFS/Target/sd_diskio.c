@@ -270,6 +270,17 @@ DRESULT SD_read(BYTE lun, BYTE *buff, DWORD sector, UINT count)
     return res;
   }
 
+#if (ENABLE_SD_DMA_CACHE_MAINTENANCE == 1)
+  /*
+    Clean D-Cache before DMA read: if the destination buffer has dirty
+    cache lines, a write-back during the DMA transfer can stall the
+    SDMMC IDMA long enough to cause FIFO overrun (RX_OVERRUN).
+    Clean first, then invalidate after the transfer completes.
+  */
+  alignedAddr = (uint32_t)buff & ~0x1F;
+  SCB_CleanDCache_by_Addr((uint32_t*)alignedAddr, count*BLOCKSIZE + ((uint32_t)buff - alignedAddr));
+#endif
+
 #if defined(ENABLE_SCRATCH_BUFFER)
   if (!((uint32_t)buff & 0x1F))
   {
