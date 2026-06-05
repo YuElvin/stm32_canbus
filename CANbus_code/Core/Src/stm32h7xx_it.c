@@ -58,10 +58,10 @@ static void fault_print(const char *name, uint32_t *sp)
   char buf[96];
   /* sp[6] = PC, sp[5] = LR from exception stack frame */
   sprintf(buf, "\r\n[%s] PC=0x%08lX LR=0x%08lX\r\n"
-               "  CFSR=0x%08lX HFSR=0x%08lX\r\n",
+               "  CFSR=0x%08lX HFSR=0x%08lX BFAR=0x%08lX\r\n",
           name,
           sp[6], sp[5],
-          SCB->CFSR, SCB->HFSR);
+          SCB->CFSR, SCB->HFSR, SCB->BFAR);
   HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500);
 }
 /* USER CODE END 0 */

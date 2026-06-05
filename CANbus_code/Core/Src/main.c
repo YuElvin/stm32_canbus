@@ -127,6 +127,11 @@ int main(void)
   extern SD_HandleTypeDef hsd1;
   hsd1.Instance = SDMMC1;
   hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
+  /* Force-reset SDMMC1 to clear stale IDMA state from debug resets.
+     Without this, a previous session's IDMACTRL/IDMABASE0 may remain
+     configured, causing phantom AXI writes → IMPRECISE HardFault. */
+  __HAL_RCC_SDMMC1_FORCE_RESET();
+  __HAL_RCC_SDMMC1_RELEASE_RESET();
   HAL_SD_MspInit(&hsd1);
   SD_Detect_GPIO_Init();
   /* SD_Verify() must run after FreeRTOS scheduler starts (sd_diskio uses

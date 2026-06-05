@@ -1,6 +1,6 @@
 # 调试日志 — STM32H750 + LAN8720 以太网 Ping 验证
 
-> 最后更新：2026-06-04 | 项目阶段：阶段 4（SDMMC 调试中）| 覆盖 commit `7e8ebc3` ~ `b48adec`
+> 最后更新：2026-06-05 | 项目阶段：阶段 4（SDMMC 调试中）| 覆盖 commit `7e8ebc3` ~ 至今
 
 ## 一、目标
 
@@ -1203,4 +1203,74 @@ LwIP Heap       0x30005100 ~ 0x300090FF  pbuf/TCP 缓冲区 (16KB)
 41. **ENABLE_SCRATCH_BUFFER 是 DMA+Cache 场景的最佳实践** —— 将 DMA 目标缓冲与用户缓冲通过 scratch buffer 隔离：DMA 永远读写 scratch（D2 SRAM），完成后 memcpy 到用户缓冲（可在任意内存）。这样做的好处：
     - 用户缓冲地址不受限制（DTCM/栈/堆都行）
     - Cache 维护只需针对 scratch（固定地址，方便管理）
-    - ST H743 DEMO 示例代码也推荐此模式
+     - ST H743 DEMO 示例代码也推荐此模式
+
+---
+
+### 问题 39：Cache 维护操作 Non-Cacheable 内存导致 IMPRECISE BusFault（2026-06-05）
+
+**现象**：
+
+在问题 37/38 修复后（SD 缓冲迁至 D2 SRAM），每次 SD 验证在 `HAL_SD_Init` 成功后立即 HardFault：
+
+```
+[SD] HAL_SD_Init: ret=0 state=1 err=0x0
+[HARDFAULT] PC=0x080016FC LR=0x080078CB
+  CFSR=0x00000400 HFSR=0x40000000 BFAR=0x00000000
+```
+
+**诊断过程**：
+
+1. **`addr2line`**：PC=0x080016FC → `SCB_CleanDCache_by_Addr`（cachel1_armv7.h:398），LR=0x080078CB → `SD_SendStatus`（hal_sd.c:3445）
+
+2. **反汇编确认**：PC 落在 `SD_read` 中内联的 `SCB_CleanDCache_by_Addr` 循环内部（DCCMVAC 写入指令），即 `sd_diskio.c:281` 的 Cache Clean 调用：
+
+```asm
+080016f6: dsb sy          ; __DSB()
+080016fc: ldr r1,[pc,#324] ; r1 = SCB base (0xE000E000)
+080016fe: str.w r2,[r1,#0x268] ; SCB->DCCMVAC = op_addr  ← PC 在此
+```
+
+3. **寄存器分析**：
+   - CFSR=0x00000400 → BFSR[15:8]=0x04 → **IMPRECISERR=1**（bit 10），无 PRECISERR、IBUSERR
+   - BFAR=0x00000000 → BFARVALID=0（不精确错误无有效地址）
+   - HFSR=0x40000000 → FORCED=1（BusFault 升级为 HardFault）
+
+4. **时间线**：
+
+```
+[SD] TF Card Verify Start       ← SD_Verify() entry
+[ETH] LAN8720 ...                ← FreeRTOS 调度，EthLink 任务运行（第一次）
+[SD] HAL_SD_Init: ret=0 ...      ← BSP_SD_Init → HAL_SD_Init 成功
+[HARDFAULT]                      ← f_mount → disk_read(0) → SD_read → SCB_CleanDCache_by_Addr CRASH
+```
+
+第二次启动更快（卡已初始）：HAL_SD_Init 仅 23ms（第一次 560ms），ETH 来不及输出就崩了，但崩溃位置完全一致。
+
+5. **排除的假说**：
+   - **ETH 并发干扰**：第二次崩溃无 ETH 输出，排除
+   - **SDMMC IDMA 残留状态**：尝试加 `__HAL_RCC_SDMMC1_FORCE/RESET`（commit 前一次尝试），**无效**，排除
+   - **栈溢出**：initTestTask 8KB 栈，`W25QXX_Verify` 局部 `wr_buf[256]+rd_buf[256]=512B`，`SD_Verify` 局部 `buf[96]+rd_buf[64]+card_info[~20]=180B`，总 < 1KB，排除
+   - **DTCM 被 IDMA 访问**：已在问题 37 修复（迁移至 D2 SRAM），排除
+
+**根因**：
+
+D2 SRAM 在 `MPU_Config()` 中配置为 **Normal Non-Cacheable**（TEX=001, C=0, B=0），但 `sd_diskio.c` 仍然启用了 `ENABLE_SD_DMA_CACHE_MAINTENANCE`，导致 `SD_read`/`SD_write` 对 D2 SRAM 调用 `SCB_CleanDCache_by_Addr` / `SCB_InvalidateDCache_by_Addr`。
+
+**ARM Cortex-M7 Technical Reference Manual 明确警告**：对 Non-Cacheable 内存区域执行 Cache 维护操作会导致不可预测的行为，典型症状就是 IMPRECISE BusFault。
+
+Cache 维护操作通过写 `SCB->DCCMVAC`（0xE000EF68）触发，Cache 控制器内部会对目标地址做属性查询。当地址落在 MPU 标记的 NC 区域时，Cache 控制器检测到冲突 → 通过 AXI 总线报错 → 写入缓冲 → 后续 `__DSB()` 刷出缓冲 → IMPRECISERR BusFault。
+
+**为什么之前不崩（问题 37 修复前）？** 因为当时 SDFatFS 在 DTCM（0x20000000+），Cache Clean 操作恰好落在了 DTCM 地址上。DTCM 不经过 AXI 总线，Cache 控制器查询 TCM 接口的地址属性时，TCM 总线返回 "Device/Strongly-Ordered" → Cache 控制器报告错误 → 同样是 IMPRECISERR。但当时 IDMA 写 DTCM 的 BusFault 更早触发，掩盖了 Cache Clean 问题。
+
+**与 CubeMX 模板的关系**：ST 的 `sd_diskio_dma_rtos_template_bspv1.c` 模板假设 SD 缓冲区在 **Cacheable** 内存（如 AXI SRAM），因此需要 Cache 维护保证 DMA 一致性。迁移到 D2 SRAM（NC）后，Cache 维护不再适用且会引发 Crash。
+
+**修复方案**：将 `ENABLE_SD_DMA_CACHE_MAINTENANCE` 从 1 改为 0，取消 D2 SRAM 缓冲区的 Cache 维护。D2 SRAM 是 Non-Cacheable 的，本来就不需要 Cache Clean/Invalidate。
+
+**新日志格式**：HardFault 输出增加 `BFAR=（SCB->BFAR）`，方便区分精确/不精确总线错误。
+
+### 经验总结（续）
+
+42. **Cache 维护不能用于 Non-Cacheable 内存** —— Cortex-M7 规范明确禁止对 NC 区域做 Cache 维护操作，否则产生 IMPRECISE BusFault。判断方法：检查 MPU 配置中的 C 位（Cacheable），若 C=0 则所有 `SCB_CleanDCache_by_Addr` / `SCB_InvalidateDCache_by_Addr` 必须跳过。
+
+43. **D2 SRAM NC + 无 Cache 维护 = 正确配置** —— 当 DMA 缓冲区放在 D2 SRAM 且 D2 SRAM 为 NC 时，不需要也不应该做 Cache 维护。DMA 写入直接到物理 SRAM，CPU 读取看到最新数据。唯一代价：CPU 访问性能略低（无 Cache 加速）。
