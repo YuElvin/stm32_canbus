@@ -75,7 +75,10 @@ See BSP_SD_ErrorCallback() and BSP_SD_AbortCallback() below
  * Notice: This is applicable only for cortex M7 based platform.
  */
 /* USER CODE BEGIN enableSDDmaCacheMaintenance */
-#define ENABLE_SD_DMA_CACHE_MAINTENANCE  1
+/* D2 SRAM is configured as Normal Non-Cacheable (MPU TEX=001,C=0,B=0).
+   Cache maintenance operations on NC memory are UNPREDICTABLE per ARMv7-M
+   spec and cause IMPRECISE BusFault on STM32H7. Disable cache maintenance. */
+#define ENABLE_SD_DMA_CACHE_MAINTENANCE  0
 /* USER CODE END enableSDDmaCacheMaintenance */
 
 /*
@@ -518,21 +521,21 @@ DRESULT SD_write(BYTE lun, const BYTE *buff, DWORD sector, UINT count)
         ret = BSP_SD_WriteBlocks_DMA((uint32_t*)scratch, (uint32_t)sector++, 1);
         if (ret == MSD_OK )
         {
-          /* wait until the read is successful or a timeout occurs */
+          /* wait until the write is successful or a timeout occurs */
 #if (osCMSIS < 0x20000U)
           /* wait for a message from the queue or a timeout */
           event = osMessageGet(SDQueueID, SD_TIMEOUT);
 
           if (event.status == osEventMessage)
           {
-            if (event.value.v == READ_CPLT_MSG)
+            if (event.value.v == WRITE_CPLT_MSG)
             {
               timer = osKernelSysTick();
               /* block until SDIO IP is ready or a timeout occur */
               while(osKernelSysTick() - timer <SD_TIMEOUT)
 #else
                 status = osMessageQueueGet(SDQueueID, (void *)&event, NULL, SD_TIMEOUT);
-              if ((status == osOK) && (event == READ_CPLT_MSG))
+              if ((status == osOK) && (event == WRITE_CPLT_MSG))
               {
                 timer = osKernelGetTickCount();
                 /* block until SDIO IP is ready or a timeout occur */

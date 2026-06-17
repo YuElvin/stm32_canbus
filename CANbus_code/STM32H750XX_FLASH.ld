@@ -214,16 +214,19 @@ SECTIONS
 
   /* SD card FS object and DMA scratch buffers must be in D2 SRAM.
      DTCM (0x20000000) is NOT accessible by SDMMC IDMA (AXI bus).
-     Placed after Rx_PoolSection, before LwIP heap. */
+     Placed right after Rx_PoolSection (ALIGN), before LwIP heap at 0x30005100. */
   .sd_sec (NOLOAD) :
   {
-    . = ABSOLUTE(0x30004C00);
+    . = ALIGN(32);
     *(.SDFileSystem)
     . = ALIGN(32);
     *(.sd_scratch)
     . = ALIGN(32);
     *(.sd_buffer)
   } >RAM_D2
+
+  /* Sanity check: SD section must not overlap LwIP heap */
+  ASSERT(. <= 0x30005100, "ERROR: .sd_sec overlaps LwIP RAM heap at 0x30005100")
 
   /* Remove information from the standard libraries */
   /DISCARD/ :
